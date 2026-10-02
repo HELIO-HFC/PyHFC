@@ -7,16 +7,18 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import re
 import tkinter as tk
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from typing import Any
 
 import numpy as np
+from matplotlib import patheffects
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 from numpy.typing import NDArray
@@ -26,6 +28,7 @@ from pyhfc import __version__
 from pyhfc.api import HQI_DEV_WSDL, HQI_WSDL, HQIClient, HQIError, Row, load_image
 from pyhfc.api.sql import and_conditions, sql_equals, sql_where, to_datetime
 from pyhfc.api.tables import OBS_TABLE, PP_TABLE
+from pyhfc.hfcviewer import theme
 from pyhfc.improlib import auto_contrast, chain2image
 
 __author__ = "Xavier Bonnin"
@@ -34,9 +37,6 @@ __project__ = "HELIO (FP7 project No. 238969)"
 __institute__ = "LESIA"
 
 logger = logging.getLogger(__name__)
-
-# Background color
-BG_COLOR = "#C7CBE4"
 
 HQI_TFORMAT = "%Y-%m-%dT%H:%M:%S"
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
@@ -70,12 +70,12 @@ class Feature:
 
 
 FEATURES = (
-    Feature("ar", "Active regions", "VIEW_AR_HQI", "r"),
-    Feature("ch", "Coronal holes", "VIEW_CH_HQI", "b"),
-    Feature("sp", "Sunspots", "VIEW_SP_HQI", "y"),
-    Feature("rs", "NRH sources", "VIEW_RS_HQI", "m"),
-    Feature("pr", "Prominences", "VIEW_PRO_HQI", "g"),
-    Feature("fi", "Filaments", "VIEW_FIL_HQI", "c"),
+    Feature("ar", "Active regions", "VIEW_AR_HQI", theme.FEATURE_COLORS["ar"]),
+    Feature("ch", "Coronal holes", "VIEW_CH_HQI", theme.FEATURE_COLORS["ch"]),
+    Feature("sp", "Sunspots", "VIEW_SP_HQI", theme.FEATURE_COLORS["sp"]),
+    Feature("rs", "NRH sources", "VIEW_RS_HQI", theme.FEATURE_COLORS["rs"]),
+    Feature("pr", "Prominences", "VIEW_PRO_HQI", theme.FEATURE_COLORS["pr"]),
+    Feature("fi", "Filaments", "VIEW_FIL_HQI", theme.FEATURE_COLORS["fi"]),
 )
 FEATURE_BY_KEY = {feature.key: feature for feature in FEATURES}
 
@@ -90,11 +90,17 @@ class DataSet:
     telescope: str = ""
     wavename: str = ""
     table: str = OBS_HFC_TABLE
+    #: name displayed in the viewer
+    name: str = ""
 
     @property
     def title(self) -> str:
         parts = (self.observatory, self.instrument, self.telescope, self.wavename)
         return "-".join(part for part in parts if part)
+
+    @property
+    def display(self) -> str:
+        return self.name or self.title
 
     def where(self) -> str:
         """SQL condition selecting the observations of this data set."""
@@ -111,15 +117,29 @@ class DataSet:
 
 # List for observatory radio buttons
 DATASETS = (
-    DataSet("SDO_HMI_I", "SDO", "HMI", telescope="Continuum"),
-    DataSet("SDO_HMI_M", "SDO", "HMI", telescope="Magnetogram"),
-    DataSet("SDO_AIA", "SDO", "AIA"),
-    DataSet("SOHO_MDI_I", "SoHO", "MDI", telescope="Continuum"),
-    DataSet("SOHO_MDI_M", "SoHO", "MDI", telescope="Magnetogram"),
-    DataSet("SOHO_EIT", "SoHO", "EIT"),
-    DataSet("NANCAY_RH", "Nancay", "Radioheliograph"),
-    DataSet("MEUDON_SH_HA", "Meudon", "Spectroheliograph", wavename="Halpha", table=PP_HFC_TABLE),
-    DataSet("MEUDON_SH_K3", "Meudon", "Spectroheliograph", wavename="CAII K3", table=PP_HFC_TABLE),
+    DataSet("SDO_HMI_I", "SDO", "HMI", telescope="Continuum", name="SDO / HMI continuum"),
+    DataSet("SDO_HMI_M", "SDO", "HMI", telescope="Magnetogram", name="SDO / HMI magnetogram"),
+    DataSet("SDO_AIA", "SDO", "AIA", name="SDO / AIA"),
+    DataSet("SOHO_MDI_I", "SoHO", "MDI", telescope="Continuum", name="SoHO / MDI continuum"),
+    DataSet("SOHO_MDI_M", "SoHO", "MDI", telescope="Magnetogram", name="SoHO / MDI magnetogram"),
+    DataSet("SOHO_EIT", "SoHO", "EIT", name="SoHO / EIT"),
+    DataSet("NANCAY_RH", "Nancay", "Radioheliograph", name="Nançay / Radioheliograph"),
+    DataSet(
+        "MEUDON_SH_HA",
+        "Meudon",
+        "Spectroheliograph",
+        wavename="Halpha",
+        table=PP_HFC_TABLE,
+        name="Meudon / Spectroheliograph Hα",
+    ),
+    DataSet(
+        "MEUDON_SH_K3",
+        "Meudon",
+        "Spectroheliograph",
+        wavename="CAII K3",
+        table=PP_HFC_TABLE,
+        name="Meudon / Spectroheliograph Ca II K3",
+    ),
 )
 
 # Default input arguments: the most recent SDO/AIA observation at the current
@@ -136,6 +156,34 @@ FEATURE_KEYS = ("ar", "ch")
 
 def input_date(date: datetime) -> str:
     return date.strftime(HQI_TFORMAT)
+
+
+def display_date(value: Any) -> str:
+    """Format a date of observation for display, e.g. "2012-06-01 12:00:00 UTC"."""
+    try:
+        return to_datetime(value).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+#: Display of the wavelength units of the HFC
+WAVE_UNITS = {"NM": "nm", "A": "Å", "ANGSTROM": "Å", "UM": "µm", "MM": "mm", "CM": "cm", "M": "m"}
+SPEED_OF_LIGHT = 299_792_458.0  # m/s
+
+
+def wavelength_text(wavemin: Any, waveunit: Any) -> str:
+    """Format a wavelength for display, e.g. "17.1 nm" or "1.999 m (150 MHz)"."""
+    unit_key = str(waveunit or "").strip().upper()
+    unit = WAVE_UNITS.get(unit_key, str(waveunit or "").strip())
+    try:
+        value = float(wavemin)
+    except (TypeError, ValueError):
+        return f"{wavemin} {unit}".strip()
+    text = f"{value:.4g} {unit}".strip()
+    if unit_key == "M" and value > 0:
+        # radio observations: also give the frequency
+        text += f" ({SPEED_OF_LIGHT / value / 1e6:.0f} MHz)"
+    return text
 
 
 def parse_features(text: str) -> list[str]:
@@ -276,8 +324,9 @@ class Viewer(tk.Frame):
         dev: bool = False,
         features: Sequence[str] = FEATURE_KEYS,
     ) -> None:
-        super().__init__(master)
+        super().__init__(master, background=theme.WHITE)
         self.master: tk.Tk = master
+        self._fonts = theme.apply_theme(master)
         # The HFC values are kept as strings, as returned by the service
         self._hqi = HQIClient(URL_WSDL_DEV if dev else url_wsdl, typed=False)
 
@@ -289,25 +338,33 @@ class Viewer(tk.Frame):
             index = find_dataset(OBSERVATORY, INSTRUMENT) or 0
         self._obsid.set(index)
 
-        width = xsize or int(0.6 * master.winfo_screenwidth())
-        height = ysize or int(0.7 * master.winfo_screenheight())
+        width = xsize or int(0.7 * master.winfo_screenwidth())
+        height = ysize or int(0.8 * master.winfo_screenheight())
         self.master.geometry(f"{width}x{height}")
+        self.master.minsize(960, 640)
+        self.master.configure(background=theme.WHITE)
 
-        # Feature check buttons states
+        # Feature check buttons states, and number of contours displayed
         self._feat_on = {
             feature.key: tk.IntVar(value=int(feature.key in features)) for feature in FEATURES
         }
+        self._feat_count = {feature.key: tk.StringVar() for feature in FEATURES}
         # Feature contour color table (0: by feature, 1: by tracking)
         self._feat_ct = tk.IntVar(value=0)
+        self._status = tk.StringVar()
 
         self.obs_data: Row | None = None
         self.image: Image.Image | None = None
+        # quicklook image ready to be displayed (computed once per observation)
+        self._image_array: NDArray[Any] | None = None
         self._feat_data: dict[str, list[Row] | None] = {}
+        self._feat_artists: list[Any] = []
+        self._date_text: Any = None
         self._xlim: tuple[float, float] = (0.0, 0.0)
         self._ylim: tuple[float, float] = (0.0, 0.0)
 
         self._build_menubar()
-        self.master.config(menu=self._menubar, bg=BG_COLOR)
+        self.master.config(menu=self._menubar)
         self._place_widgets()
 
         # Load and plot the observation nearest to the given date or, by default,
@@ -330,10 +387,10 @@ class Viewer(tk.Frame):
         optmenu = tk.Menu(self._menubar, tearoff=0)
         colmenu = tk.Menu(optmenu, tearoff=0)
         colmenu.add_radiobutton(
-            label="Colors by tracking", variable=self._feat_ct, value=1, command=self._plot_qclk
+            label="Colors by tracking", variable=self._feat_ct, value=1, command=self._draw_features
         )
         colmenu.add_radiobutton(
-            label="Colors by feature", variable=self._feat_ct, value=0, command=self._plot_qclk
+            label="Colors by feature", variable=self._feat_ct, value=0, command=self._draw_features
         )
         optmenu.add_cascade(label="Set colors", menu=colmenu)
         self._menubar.add_cascade(label="Options", menu=optmenu)
@@ -343,81 +400,135 @@ class Viewer(tk.Frame):
         helpmenu.add_command(label="About HFC Viewer", command=self._about)
         self._menubar.add_cascade(label="Help", menu=helpmenu)
 
+    # ________________ Widgets _______________________
+
     def _place_widgets(self) -> None:
-        # header frame and its widgets
-        hframe = tk.Frame(self.master, bg=BG_COLOR)
-        lbtn = tk.Button(
-            hframe,
-            text="Previous",
-            bg=BG_COLOR,
-            highlightbackground=BG_COLOR,
-            command=self._prev_date,
+        self._place_header()
+        self._place_navigation()
+        self._place_status_bar()
+        body = ttk.Frame(self)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._place_side_panel(body)
+        self._place_plot(body)
+
+    def _place_header(self) -> None:
+        """Anthracite band with a violet brand block, as on the LIRA website."""
+        header = ttk.Frame(self, style="Header.TFrame")
+        header.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(header, text="HFC", style="Brand.TLabel", padding=(18, 12)).pack(
+            side=tk.LEFT, fill=tk.Y
         )
-        rbtn = tk.Button(
-            hframe, text="Next", bg=BG_COLOR, highlightbackground=BG_COLOR, command=self._next_date
+        ttk.Label(header, text="HFC Viewer", style="Header.TLabel", padding=(16, 8, 10, 8)).pack(
+            side=tk.LEFT
         )
-        # Most recent observation at the current date and time
-        self._latest_btn = tk.Button(
-            hframe,
-            text="Latest",
-            bg=BG_COLOR,
-            highlightbackground=BG_COLOR,
-            command=self._latest_date,
+        ttk.Label(header, text="Heliophysics Feature Catalogue", style="Subheader.TLabel").pack(
+            side=tk.LEFT, pady=(4, 0)
         )
-        self._header = tk.Entry(hframe, highlightbackground=BG_COLOR, textvariable=self._date)
+        ttk.Frame(self, style="Accent.TFrame", height=4).pack(side=tk.TOP, fill=tk.X)
+
+    def _place_navigation(self) -> None:
+        nav = ttk.Frame(self, padding=(16, 10))
+        nav.pack(side=tk.TOP, fill=tk.X)
+        self._prev_btn = ttk.Button(
+            nav, text="‹  Previous", style="Secondary.TButton", command=self._prev_date
+        )
+        self._prev_btn.pack(side=tk.LEFT)
+        ttk.Label(nav, text="Date (UTC)", style="Field.TLabel").pack(side=tk.LEFT, padx=(16, 6))
+        self._header = ttk.Entry(nav, textvariable=self._date, width=20, font=self._fonts.mono)
+        self._header.pack(side=tk.LEFT, ipady=2)
         self._header.bind("<Return>", self._date_event)
+        self._next_btn = ttk.Button(
+            nav, text="Next  ›", style="Secondary.TButton", command=self._next_date
+        )
+        self._next_btn.pack(side=tk.LEFT, padx=(10, 0))
+        # Most recent observation at the current date and time
+        self._latest_btn = ttk.Button(nav, text="Latest", command=self._latest_date)
+        self._latest_btn.pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Label(
+            nav, text="Format: YYYY-MM-DDTHH:MM:SS, then press Return", style="Field.TLabel"
+        ).pack(side=tk.LEFT, padx=(16, 0))
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.TOP, fill=tk.X)
 
-        # Image frame and the plot window
-        iframe = tk.Frame(self.master, bg=BG_COLOR)
-        self._fig = Figure(figsize=(5, 4), dpi=100)
-        self._plt = self._fig.add_subplot(111)
-        self._canvas = FigureCanvasTkAgg(self._fig, master=iframe)
-        toolbar = NavigationToolbar2Tk(self._canvas, iframe)
-        toolbar.update()
+    def _place_status_bar(self) -> None:
+        bar = ttk.Frame(self, style="Status.TFrame", padding=(16, 6))
+        bar.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(bar, textvariable=self._status, style="Status.TLabel").pack(side=tk.LEFT)
+        ttk.Label(bar, text=f"pyhfc {__version__}", style="Status.TLabel").pack(side=tk.RIGHT)
 
-        # the option menu frame
-        oframe = tk.Frame(self.master, bg=BG_COLOR)
+    def _section(self, parent: tk.Misc, text: str, top: int = 0) -> None:
+        ttk.Label(parent, text=text, style="Section.TLabel").pack(anchor=tk.W, pady=(top, 2))
+        ttk.Frame(parent, style="Accent.TFrame", height=2).pack(fill=tk.X, pady=(0, 6))
 
-        # Data set buttons
-        dlabel = tk.Label(oframe, text="DATA SETS", bg=BG_COLOR)
-        dframe = tk.Frame(oframe, bg=BG_COLOR, relief=tk.SUNKEN, bd=2)
+    def _place_side_panel(self, body: ttk.Frame) -> None:
+        side = ttk.Frame(body, style="Side.TFrame", padding=(18, 14))
+        side.pack(side=tk.RIGHT, fill=tk.Y)
+        ttk.Separator(body, orient=tk.VERTICAL).pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._section(side, "DATA SETS")
         for index, dataset in enumerate(DATASETS):
-            tk.Radiobutton(
-                dframe,
-                text=dataset.label,
-                command=self._set_date,
-                variable=self._obsid,
+            ttk.Radiobutton(
+                side,
+                text=dataset.display,
                 value=index,
-                bg=BG_COLOR,
-            ).pack(anchor=tk.W)
+                variable=self._obsid,
+                command=self._set_date,
+                style="Side.TRadiobutton",
+            ).pack(anchor=tk.W, fill=tk.X)
 
-        # Features buttons
-        flabel = tk.Label(oframe, text="FEATURES", bg=BG_COLOR)
-        fframe = tk.Frame(oframe, bg=BG_COLOR, relief=tk.SUNKEN, bd=2)
+        self._section(side, "FEATURES", top=14)
         for feature in FEATURES:
-            tk.Checkbutton(
-                fframe,
+            row = ttk.Frame(side, style="Side.TFrame")
+            row.pack(fill=tk.X)
+            ttk.Checkbutton(
+                row,
                 text=feature.label,
                 variable=self._feat_on[feature.key],
-                bg=BG_COLOR,
-                command=self._plot_qclk,
-            ).pack(anchor=tk.W)
+                command=self._draw_features,
+                style="Side.TCheckbutton",
+            ).pack(side=tk.LEFT)
+            ttk.Label(row, textvariable=self._feat_count[feature.key], style="Count.TLabel").pack(
+                side=tk.RIGHT, padx=(6, 0)
+            )
+            # legend: a sample of the contour line
+            swatch = tk.Canvas(
+                row, width=26, height=14, background=theme.VIOLET_PALE, highlightthickness=0
+            )
+            swatch.create_line(2, 7, 24, 7, fill=theme.NIGHT, width=5, capstyle=tk.ROUND)
+            swatch.create_line(2, 7, 24, 7, fill=feature.color, width=3, capstyle=tk.ROUND)
+            swatch.pack(side=tk.RIGHT, padx=(10, 0))
 
-        # pack the widgets
-        hframe.pack(side="top", pady=4, anchor=tk.CENTER)
-        lbtn.grid()
-        self._header.grid(column=1, row=0, padx=12)
-        rbtn.grid(column=2, row=0)
-        self._latest_btn.grid(column=3, row=0, padx=(12, 0))
-        iframe.pack(expand=True, fill="both", side="left")
-        oframe.pack(expand=False, fill="both", side="left")
-        dlabel.pack(anchor=tk.CENTER, ipady=2)
-        dframe.pack(expand=False, fill="both", side="top")
-        flabel.pack(anchor=tk.CENTER, ipady=2)
-        fframe.pack(expand=False, fill="both", side="top")
-        self._canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._section(side, "CONTOUR COLORS", top=14)
+        row = ttk.Frame(side, style="Side.TFrame")
+        row.pack(fill=tk.X)
+        for value, text in ((0, "By feature"), (1, "By tracking")):
+            ttk.Radiobutton(
+                row,
+                text=text,
+                value=value,
+                variable=self._feat_ct,
+                command=self._draw_features,
+                style="Side.TRadiobutton",
+            ).pack(side=tk.LEFT, padx=(0, 16))
 
-    def _date_event(self, event: tk.Event[tk.Entry]) -> None:
+    def _place_plot(self, body: ttk.Frame) -> None:
+        frame = ttk.Frame(body, padding=(8, 8, 8, 0))
+        frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._fig = Figure(figsize=(6, 6), dpi=100, layout="constrained", facecolor=theme.WHITE)
+        self._plt = self._fig.add_subplot(111)
+        self._canvas = FigureCanvasTkAgg(self._fig, master=frame)
+        toolbar = NavigationToolbar2Tk(self._canvas, frame, pack_toolbar=False)
+        for widget in (toolbar, *toolbar.winfo_children()):
+            with contextlib.suppress(tk.TclError):  # widgets without background
+                widget["background"] = theme.WHITE
+        toolbar.update()
+        toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+        canvas = self._canvas.get_tk_widget()
+        canvas.configure(background=theme.WHITE, highlightthickness=0)
+        canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    # ________________ Navigation ____________________
+
+    def _date_event(self, event: tk.Event[ttk.Entry]) -> None:
         self._set_date()
 
     def _set_date(self) -> None:
@@ -450,14 +561,17 @@ class Viewer(tk.Frame):
             messagebox.showerror("ERROR", "INPUT DATE IS INVALID!")
             return None
 
-    def _busy(self, func: Callable[[], Any]) -> Any:
-        """Run ``func`` showing a busy cursor."""
+    def _busy(self, func: Callable[[], Any], message: str = "Loading…") -> Any:
+        """Run ``func`` showing a busy cursor and a message in the status bar."""
+        previous = self._status.get()
+        self._status.set(message)
         self.master.config(cursor="watch")
         self.master.update_idletasks()
         try:
             return func()
         finally:
             self.master.config(cursor="")
+            self._status.set(previous)
 
     def _load_observation(self, direction: str) -> None:
         date_obs = self._current_date()
@@ -471,12 +585,17 @@ class Viewer(tk.Frame):
             direction,
         )
         try:
-            row = self._busy(lambda: load_observation(self._hqi, dataset, date_obs, direction))
+            row = self._busy(
+                lambda: load_observation(self._hqi, dataset, date_obs, direction),
+                f"Loading {dataset.display} observation…",
+            )
         except HQIError as err:
             logger.error("Querying HFC has failed: %s", err)
+            self._status.set("Querying the HFC has failed")
             messagebox.showerror("ERROR", "QUERYING HFC HAS FAILED!")
             return
         if row is None:
+            self._status.set(f"No {dataset.display} observation found")
             messagebox.showwarning("WARNING", "NO DATA FOUND IN THE HFC!")
             return
 
@@ -491,15 +610,27 @@ class Viewer(tk.Frame):
             return
         qclk_url = f"{self.obs_data['QCLK_URL']}/{self.obs_data['QCLK_FNAME']}"
         logger.info("Loading quicklook image from %s", qclk_url)
-        self.image = self._busy(lambda: load_image(qclk_url))
+        self.image = self._busy(lambda: load_image(qclk_url), "Loading the quicklook image…")
+        # processed once here, not at each redraw
+        self._image_array = image_to_array(self.image) if self.image is not None else None
+
+    # ________________ Plot __________________________
 
     def _plot_qclk(self) -> None:
+        """Draw the observation and the selected features."""
+        if self.obs_data is None:
+            return
+        self._draw_observation()
+        self._draw_features()
+
+    def _draw_observation(self) -> None:
+        """Draw the quicklook image of the observation (or the solar limb)."""
         if self.obs_data is None:
             return
         data = self.obs_data
-
-        # Clear older data
-        self._plt.clear()
+        ax = self._plt
+        ax.clear()
+        self._feat_artists = []
         r_sun = float(data["R_SUN"])
         naxis1 = int(data["NAXIS1"])
         naxis2 = int(data["NAXIS2"])
@@ -515,39 +646,79 @@ class Viewer(tk.Frame):
         self._xlim = (float(xs.min()), float(xs.max()))
         self._ylim = (float(ys.min()), float(ys.max()))
 
-        if self.image is None:
+        ax.set_facecolor(theme.NIGHT)
+        if self._image_array is None:
             logger.warning("NO QUICKLOOK IMAGE FOUND!")
             # If no image --> plot solar radius contour
             theta = np.linspace(0.0, 2.0 * np.pi, 361)
-            self._plt.plot(cdelt1 * r_sun * np.cos(theta), cdelt2 * r_sun * np.sin(theta))
+            ax.plot(
+                cdelt1 * r_sun * np.cos(theta),
+                cdelt2 * r_sun * np.sin(theta),
+                color=theme.VIOLET_LIGHT,
+            )
         else:
-            self._plt.imshow(
-                image_to_array(self.image),
+            ax.imshow(
+                self._image_array,
                 cmap="gray",
                 extent=(*self._xlim, *self._ylim),
                 origin="lower",
             )
-        self._plt.set_title(f"{self.dataset.title} [{data['WAVEMIN']} {data['WAVEUNIT']}]")
-        self._plt.set_xlabel("X (arcsec)")
-        self._plt.set_ylabel("Y (arcsec)")
+        # title, and the date of observation on a second line (long titles do not overlap it)
+        title = f"{self.dataset.display}  ·  {wavelength_text(data['WAVEMIN'], data['WAVEUNIT'])}"
+        ax.set_title(title, loc="left", fontsize=14, fontweight="bold", color=theme.INK, pad=26)
+        self._date_text = ax.text(
+            0.0,
+            1.012,
+            display_date(data["DATE_OBS"]),
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=12,
+            color=theme.MUTED,
+        )
+        ax.set_xlabel("X  [arcsec]", fontsize=12, color=theme.INK)
+        ax.set_ylabel("Y  [arcsec]", fontsize=12, color=theme.INK)
+        ax.tick_params(colors=theme.INK, labelsize=11)
+        for spine in ax.spines.values():
+            spine.set_color(theme.MUTED)
 
+    def _draw_features(self) -> None:
+        """(Re)draw the contours of the selected features, keeping the image."""
+        if self.obs_data is None:
+            return
+        for artist in self._feat_artists:
+            artist.remove()
+        self._feat_artists = []
         for feature in FEATURES:
+            count = self._feat_count[feature.key]
             if self._feat_on[feature.key].get():
                 logger.info("Plotting %s data", feature.label.lower())
-                self._plot_feat(feature)
-
+                number = self._plot_feat(feature)
+                count.set(str(number) if number else "none")
+            else:
+                count.set("")
         self._plt.set_xlim(*self._xlim)
         self._plt.set_ylim(*self._ylim)
+        self._update_status()
         self._canvas.draw_idle()
 
-    def _plot_feat(self, feature: Feature) -> None:
+    def _plot_feat(self, feature: Feature) -> int:
+        """Draw the contours of a feature, and return their number."""
         if feature.key not in self._feat_data:
-            self._feat_data[feature.key] = self._busy(lambda: self._load_feat(feature))
+            self._feat_data[feature.key] = self._busy(
+                lambda: self._load_feat(feature), f"Loading the {feature.label.lower()}…"
+            )
         feat_data = self._feat_data[feature.key]
         if not feat_data:
-            return
+            return 0
 
         by_tracking = self._feat_ct.get() == 1
+        # dark outline, so that the contours are visible on any part of the image
+        outline = [
+            patheffects.Stroke(linewidth=3.4, foreground=theme.NIGHT, alpha=0.8),
+            patheffects.Normal(),
+        ]
+        number = 0
         for row in feat_data:
             contour = feature_contour(row)
             if contour is None:
@@ -559,7 +730,29 @@ class Viewer(tk.Frame):
                 track_id = 0
             if by_tracking and track_id > 0:
                 color = track_color(track_id)
-            self._plt.plot(*contour, color=color)
+            self._feat_artists += self._plt.plot(
+                *contour, color=color, linewidth=1.8, path_effects=outline
+            )
+            number += 1
+        return number
+
+    def _update_status(self) -> None:
+        if self.obs_data is None:
+            return
+        data = self.obs_data
+        parts = [
+            self.dataset.display,
+            wavelength_text(data["WAVEMIN"], data["WAVEUNIT"]),
+            display_date(data["DATE_OBS"]),
+        ]
+        if self._image_array is None:
+            parts.append("no quicklook image")
+        for feature in FEATURES:
+            count = self._feat_count[feature.key].get()
+            if count:
+                number = "no" if count == "none" else count
+                parts.append(f"{number} {feature.label.lower()}")
+        self._status.set("   ·   ".join(parts))
 
     def _load_feat(self, feature: Feature) -> list[Row] | None:
         date_obs = self._current_date()

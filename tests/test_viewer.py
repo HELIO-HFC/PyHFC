@@ -246,7 +246,10 @@ def test_viewer_gui(
     assert app._date.get() == "2012-06-02T07:01:45"
     assert app.image is not None
     assert len(app._plt.images) == 1
-    assert app._plt.get_title() == "Meudon-Spectroheliograph-Halpha [656.3 NM]"
+    assert app._plt.get_title(loc="left") == "Meudon / Spectroheliograph Hα  ·  656.3 nm"
+    assert app._date_text.get_text() == "2012-06-02 07:01:45 UTC"
+    assert app._plt.get_xlabel() == "X  [arcsec]"
+    assert app._plt.get_ylabel() == "Y  [arcsec]"
 
     # Overplot active regions: they are queried once, then cached
     app._feat_on["ar"].set(1)
@@ -381,3 +384,77 @@ def test_viewer_gui_latest_any_dataset_and_features(
         assert "'2026-10-02 06:59:33' AND '2026-10-02 08:59:33'" in query["WHERE"]
     assert len(app._plt.lines) == len(checked)
     assert app.image is not None
+
+
+@pytest.mark.parametrize(
+    ("wavemin", "waveunit", "text"),
+    [
+        ("17.1", "NM", "17.1 nm"),
+        (656.3, "nm", "656.3 nm"),
+        ("617.133", "NM", "617.1 nm"),
+        ("1.99862", "M", "1.999 m (150 MHz)"),
+        ("5000", "A", "5000 Å"),
+        ("12", "XX", "12 XX"),
+        ("", "NM", "nm"),
+    ],
+)
+def test_wavelength_text(wavemin: object, waveunit: str, text: str) -> None:
+    assert viewer.wavelength_text(wavemin, waveunit) == text
+
+
+def test_display_date() -> None:
+    assert viewer.display_date("2012-06-02T07:01:45") == "2012-06-02 07:01:45 UTC"
+    assert viewer.display_date(datetime(2012, 6, 2, 7, 1, 45)) == "2012-06-02 07:01:45 UTC"
+    assert viewer.display_date("unknown") == "unknown"
+
+
+def test_datasets_display_names() -> None:
+    names = [dataset.display for dataset in viewer.DATASETS]
+    assert len(set(names)) == len(names)
+    assert all(" / " in name for name in names)
+
+
+def test_viewer_gui_features_redraw(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Toggling a feature only redraws the contours: the image is processed once."""
+    monkeypatch.setattr(viewer, "load_image", lambda url, timeout=30: Image.new("L", (64, 64)))
+    conversions: list[object] = []
+    image_to_array = viewer.image_to_array
+
+    def counting_image_to_array(image: Image.Image) -> object:
+        conversions.append(image)
+        return image_to_array(image)
+
+    monkeypatch.setattr(viewer, "image_to_array", counting_image_to_array)
+    fake_service.responses += [
+        make_response([OBS_ROW]),  # observation
+        make_response([FEATURE_ROW, {**FEATURE_ROW, "TRACK_ID": 4}]),  # active regions
+        make_response([], [("DATE_OBS", "char")]),  # no coronal holes
+    ]
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=["ar", "ch"])
+    image = app._plt.images[0]
+    assert len(app._plt.lines) == 2
+    assert app._feat_count["ar"].get() == "2"
+    assert app._feat_count["ch"].get() == "none"
+    assert app._feat_count["sp"].get() == ""
+    status = app._status.get()
+    for text in ("SDO / AIA", "656.3 nm", "2012-06-02 07:01:45 UTC"):
+        assert text in status
+    assert "2 active regions" in status
+    assert "no coronal holes" in status
+
+    # unchecking a feature removes its contours, without reprocessing the image
+    app._feat_on["ar"].set(0)
+    app._draw_features()
+    assert len(app._plt.lines) == 0
+    assert app._feat_count["ar"].get() == ""
+    assert "active regions" not in app._status.get()
+    # checking it again uses the cached data (no new query)
+    app._feat_on["ar"].set(1)
+    app._draw_features()
+    assert len(app._plt.lines) == 2
+    assert len(fake_service.calls) == 3
+    # the image artist is kept, and the image was processed only once
+    assert list(app._plt.images) == [image]
+    assert len(conversions) == 1
