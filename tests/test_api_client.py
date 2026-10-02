@@ -11,7 +11,7 @@ import suds.transport
 from conftest import FakeService, make_response
 from PIL import Image
 
-from hfcpy.api import (
+from pyhfc.api import (
     FEATURE_TABLES,
     HQIClient,
     HQIConnectionError,
@@ -21,8 +21,8 @@ from hfcpy.api import (
     load_image,
     quicklook_url,
 )
-from hfcpy.api import quicklook as quicklook_module
-from hfcpy.api.client import BUNDLED_SCHEMAS, bundled_schemas
+from pyhfc.api import quicklook as quicklook_module
+from pyhfc.api.client import BUNDLED_SCHEMAS, bundled_schemas
 
 DATE = datetime(2012, 6, 1, 12, 0, 0)
 DATE_ROW = [{"DATE_OBS": "2012-06-02T07:01:45"}]

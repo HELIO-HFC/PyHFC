@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from conftest import FieldSpec, make_response, make_table_xml
 
-from hfcpy.api.votable import Field, VOTableError, extract_votable, parse_response
+from pyhfc.api.votable import Field, VOTableError, extract_votable, parse_response
 
 FIELDS: list[FieldSpec] = [
     ("DATE_OBS", "char"),

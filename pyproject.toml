@@ -1,5 +1,5 @@
 [project]
-name = "hfcpy"
+name = "pyhfc"
 version = "0.3.0"
 description = "Python tools for the HELIO Heliophysics Feature Catalogue (HFC): HQI client and viewer"
 readme = "README.rst"
@@ -32,7 +32,7 @@ pandas = ["pandas>=3.0"]
 Homepage = "http://voparis-helio.obspm.fr/hfc-gui/"
 
 [project.scripts]
-hfcviewer = "hfcpy.hfcviewer.viewer:main"
+hfcviewer = "pyhfc.hfcviewer.viewer:main"
 
 [dependency-groups]
 dev = [
@@ -95,7 +95,7 @@ addopts = ["-ra", "--strict-markers", "-m", "not network"]
 markers = ["network: tests that query the live HFC web service (deselect with -m 'not network')"]
 
 [tool.coverage.run]
-source = ["hfcpy"]
+source = ["pyhfc"]
 branch = true
 
 [tool.coverage.report]

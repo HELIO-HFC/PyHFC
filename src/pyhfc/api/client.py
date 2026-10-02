@@ -4,7 +4,7 @@
 The HQI is a SOAP web service returning VOTables. Its methods are wrapped by
 :class:`HQIClient`::
 
-    from hfcpy.api import HQIClient
+    from pyhfc.api import HQIClient
 
     hqi = HQIClient()
     response = hqi.select("VIEW_AR_HQI", what="DATE_OBS, NOAA_NUMBER", limit=10)
@@ -28,8 +28,8 @@ import suds.transport
 import truststore
 from PIL import Image
 
-from hfcpy.api.quicklook import load_image, quicklook_url
-from hfcpy.api.sql import (
+from pyhfc.api.quicklook import load_image, quicklook_url
+from pyhfc.api.sql import (
     HQI_TFORMAT,
     DateLike,
     Where,
@@ -42,8 +42,8 @@ from hfcpy.api.sql import (
     sql_where,
     to_datetime,
 )
-from hfcpy.api.tables import feature_table
-from hfcpy.api.votable import QueryResponse, Row, VOTableError, parse_response
+from pyhfc.api.tables import feature_table
+from pyhfc.api.votable import QueryResponse, Row, VOTableError, parse_response
 
 __all__ = [
     "HQI_DEV_WSDL",
@@ -62,7 +62,7 @@ HQI_WSDL = "http://voparis-helio.obspm.fr/hfc-hqi/HelioTavernaService?wsdl"
 HQI_DEV_WSDL = "http://voparis-helio.obspm.fr/hfc-hqi-dev/HelioTavernaService?wsdl"
 
 #: XML schemas imported by the HQI WSDL, bundled with the package (location -> file
-#: in hfcpy/api/schemas). They are not downloaded, which avoids depending on the
+#: in pyhfc/api/schemas). They are not downloaded, which avoids depending on the
 #: availability of their server, and on its certificate chain (www.helio-vo.eu sends
 #: an incomplete chain, which can not be verified by OpenSSL).
 BUNDLED_SCHEMAS = {
@@ -72,7 +72,7 @@ BUNDLED_SCHEMAS = {
 
 def bundled_schemas() -> suds.store.DocumentStore:
     """Return a suds document store providing the bundled XML schemas."""
-    schemas = files("hfcpy.api") / "schemas"
+    schemas = files("pyhfc.api") / "schemas"
     return suds.store.DocumentStore(
         {location: (schemas / name).read_bytes() for location, name in BUNDLED_SCHEMAS.items()}
     )

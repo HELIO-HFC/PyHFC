@@ -10,9 +10,9 @@ import pytest
 from conftest import FakeService, make_response
 from PIL import Image
 
-from hfcpy.api import HQIClient, sql_where
-from hfcpy.api.sql import nearest_date_order
-from hfcpy.hfcviewer import viewer
+from pyhfc.api import HQIClient, sql_where
+from pyhfc.api.sql import nearest_date_order
+from pyhfc.hfcviewer import viewer
 
 DATE = datetime(2012, 6, 1, 12, 0, 0)
 

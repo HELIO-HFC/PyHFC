@@ -4,10 +4,10 @@ hfcViewer CHANGELOG
 
 Version 0.3.0
 =============
-* Rename the Python package to ``hfcpy`` (the viewer command is still ``hfcviewer``)
+* Rename the Python package to ``pyhfc`` (the viewer command is still ``hfcviewer``)
 * Package the viewer with a pyproject.toml (uv), with a ``hfcviewer`` command
 * Support Python 3.12, 3.13 and 3.14, update the dependencies
-* New HQI client in the ``hfcpy.api`` sub-package, usable on its own:
+* New HQI client in the ``pyhfc.api`` sub-package, usable on its own:
   ``HQIClient`` wrapping all the HQI methods (``SQLSelect``, ``Query``,
   ``TimeQuery``, ``getTableNames``, ``getTableFields``), helpers (``nearest``,
   ``previous``, ``next``, ``features``, ``quicklook``), conditions built from

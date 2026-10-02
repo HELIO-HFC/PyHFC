@@ -1,6 +1,6 @@
 # Install the git hooks with: uv run pre-commit install
 # Copies of third-party files, kept as is
-exclude: ^src/hfcpy/api/schemas/
+exclude: ^src/pyhfc/api/schemas/
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
