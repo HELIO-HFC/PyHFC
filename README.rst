@@ -84,6 +84,14 @@ The features to display are given with ``-f`` (``ar``: active regions, ``ch``:
 coronal holes, ``sp``: sunspots, ``rs``: radio sources, ``pr``: prominences,
 ``fi``: filaments; ``-f ""`` for none).
 
+By default, the contours of a feature are the ones detected at the date closest
+to the date t of the displayed observation. A time range dt can be set for each
+feature in *Options > Set time ranges*: the contours detected in [t - dt, t + dt]
+are then all displayed on the same image, e.g. to follow the evolution of the
+active regions. The contours are then colored by tracking by default (a feature
+keeps its color from one observation to the other); *Contour colors* allows to
+color them by feature again.
+
 The status bar shows two lights telling whether the HQI service (observations
 and features) and the server of the quicklook images (FTP) are reachable (green)
 or not (red). They are checked every minute, in the background; the interval

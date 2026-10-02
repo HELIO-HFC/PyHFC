@@ -18,7 +18,7 @@ import os
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -68,6 +68,9 @@ class Settings:
     cache_max_size_mb: int = DEFAULT_MAX_SIZE_MB
     #: Interval between two checks of the servers (HQI, images), in seconds
     ping_interval_s: int = DEFAULT_PING_INTERVAL_S
+    #: Time range dt (in seconds) of each feature: its contours are looked for in
+    #: [t - dt, t + dt] around the date t of the observation (0: at the date t only)
+    feature_time_ranges: dict[str, int] = field(default_factory=dict)
 
     @staticmethod
     def default_path() -> Path:
@@ -94,6 +97,13 @@ class Settings:
                 setattr(settings, name, max(minimum, int(data[name])))
             except (ValueError, TypeError):
                 logger.warning("Invalid setting %s=%r: default value used", name, data[name])
+        ranges = data.get("feature_time_ranges", {})
+        if isinstance(ranges, dict):
+            for key, value in ranges.items():
+                try:
+                    settings.feature_time_ranges[str(key)] = max(0, int(value))
+                except (ValueError, TypeError):
+                    logger.warning("Invalid time range %s=%r: ignored", key, value)
         return settings
 
     def save(self, path: Path | None = None) -> None:

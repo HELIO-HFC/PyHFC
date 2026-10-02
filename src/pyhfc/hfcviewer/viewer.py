@@ -306,13 +306,43 @@ def load_observation(
     return row
 
 
-def feature_query(feature: Feature, date: datetime) -> dict[str, Any]:
-    """Build the parameters of HQIClient.select to get features observed around a date."""
+# Maximum time range of the features, in seconds (30 days)
+MAX_TIME_RANGE_S = 30 * 86_400
+
+
+def feature_query(feature: Feature, date: datetime, time_range: int = 0) -> dict[str, Any]:
+    """Build the parameters of HQIClient.select to get features observed around a date.
+
+    With a time range dt > 0 (in seconds), the features are looked for in
+    [date - dt, date + dt]; with dt = 0, in a window of FEATURE_TIME_WINDOW
+    around the date (the features of the closest date are then kept).
+    """
+    window = timedelta(seconds=time_range) if time_range > 0 else FEATURE_TIME_WINDOW
     return {
         "table": feature.table,
         "what": FEATURE_FIELDS,
-        "where": {"DATE_OBS": (date - FEATURE_TIME_WINDOW, date + FEATURE_TIME_WINDOW)},
+        "where": {"DATE_OBS": (date - window, date + window)},
     }
+
+
+def select_features(rows: Sequence[Row], date: datetime, time_range: int = 0) -> list[Row]:
+    """Rows of features to display: those of the closest date if ``time_range`` is 0,
+    else all of them (sorted by date)."""
+    if time_range <= 0:
+        return closest_rows(rows, date)
+    return sorted(rows, key=lambda row: to_datetime(row["DATE_OBS"]))
+
+
+def format_duration(seconds: int) -> str:
+    """Format a duration, e.g. "45 s", "1 h 30 min", "2 d 3 h"."""
+    if seconds <= 0:
+        return "0 s"
+    parts = []
+    for unit, size in (("d", 86_400), ("h", 3_600), ("min", 60), ("s", 1)):
+        number, seconds = divmod(seconds, size)
+        if number:
+            parts.append(f"{number} {unit}")
+    return " ".join(parts[:2])
 
 
 def closest_rows(rows: Sequence[Row], date: datetime) -> list[Row]:
@@ -415,8 +445,11 @@ class Viewer(tk.Frame):
             feature.key: tk.IntVar(value=int(feature.key in features)) for feature in FEATURES
         }
         self._feat_count = {feature.key: tk.StringVar() for feature in FEATURES}
-        # Feature contour color table (0: by feature, 1: by tracking)
-        self._feat_ct = tk.IntVar(value=0)
+        # number of contours displayed for each feature (None: not displayed)
+        self._feat_numbers: dict[str, int | None] = {feature.key: None for feature in FEATURES}
+        # Feature contour color table (0: by feature, 1: by tracking); by tracking
+        # by default when contours of several observations are displayed (dt > 0)
+        self._feat_ct = tk.IntVar(value=int(self._uses_time_ranges()))
         self._status = tk.StringVar()
 
         self.obs_data: Row | None = None
@@ -469,6 +502,7 @@ class Viewer(tk.Frame):
             label="Colors by feature", variable=self._feat_ct, value=0, command=self._draw_features
         )
         optmenu.add_cascade(label="Set colors", menu=colmenu)
+        optmenu.add_command(label="Set time ranges…", command=self._time_ranges_dialog)
         self._menubar.add_cascade(label="Options", menu=optmenu)
 
         settingsmenu = tk.Menu(self._menubar, tearoff=0)
@@ -937,8 +971,13 @@ class Viewer(tk.Frame):
             if self._feat_on[feature.key].get():
                 logger.info("Plotting %s data", feature.label.lower())
                 number = self._plot_feat(feature)
-                count.set(str(number) if number else "none")
+                self._feat_numbers[feature.key] = number
+                text = str(number) if number else "none"
+                if time_range := self._time_range(feature):
+                    text += f" · ±{format_duration(time_range)}"
+                count.set(text)
             else:
+                self._feat_numbers[feature.key] = None
                 count.set("")
         self._plt.set_xlim(*self._xlim)
         self._plt.set_ylim(*self._ylim)
@@ -991,28 +1030,180 @@ class Viewer(tk.Frame):
         if self._image_array is None:
             parts.append("no quicklook image")
         for feature in FEATURES:
-            count = self._feat_count[feature.key].get()
-            if count:
-                parts.append(feature.count_text(0 if count == "none" else int(count)))
+            number = self._feat_numbers[feature.key]
+            if number is not None:
+                text = feature.count_text(number)
+                if time_range := self._time_range(feature):
+                    text += f" (±{format_duration(time_range)})"
+                parts.append(text)
         self._status.set("   ·   ".join(parts))
 
     def _load_feat(self, feature: Feature) -> list[Row] | None:
         date_obs = self._current_date()
         if date_obs is None:
             return None
+        time_range = self._time_range(feature)
         try:
-            response = self._hqi.select(**feature_query(feature, date_obs))
+            response = self._hqi.select(**feature_query(feature, date_obs, time_range))
         except HQIError as err:
             logger.error("Querying HFC has failed: %s", err)
             messagebox.showerror("ERROR", "QUERYING HFC HAS FAILED!")
             return None
         self._check_cache_full()
-        rows = closest_rows(response.rows, date_obs)
+        rows = select_features(response.rows, date_obs, time_range)
         if not rows:
             logger.warning("No %s data found around this date in the HFC!", feature.label)
             return None
-        logger.info("HFC %s data found for the date %s", feature.label, rows[0]["DATE_OBS"])
+        logger.info(
+            "HFC %s data found for the date(s) %s to %s",
+            feature.label,
+            rows[0]["DATE_OBS"],
+            rows[-1]["DATE_OBS"],
+        )
         return rows
+
+    # ________________ Time ranges ___________________
+
+    def _uses_time_ranges(self) -> bool:
+        """True if a feature has a time range (contours of several observations)."""
+        return any(value > 0 for value in self._settings.feature_time_ranges.values())
+
+    def _time_range(self, feature: Feature) -> int:
+        """Time range dt of a feature, in seconds (0: at the date of the observation)."""
+        return self._settings.feature_time_ranges.get(feature.key, 0)
+
+    def _set_time_ranges(self, ranges: dict[str, int]) -> None:
+        """Change the time ranges of the features, save them, and redraw the changed ones."""
+        changed = [
+            key
+            for key, value in ranges.items()
+            if value != self._settings.feature_time_ranges.get(key, 0)
+        ]
+        used_before = self._uses_time_ranges()
+        self._settings.feature_time_ranges = {
+            key: value for key, value in ranges.items() if value > 0
+        }
+        self._settings.save()
+        for key in changed:
+            self._feat_data.pop(key, None)  # to be loaded again, with the new time range
+        if self._uses_time_ranges() != used_before:
+            # contours of several observations: colors by tracking, by default
+            self._feat_ct.set(int(self._uses_time_ranges()))
+        if changed:
+            logger.info("Time ranges of the features: %s", self._settings.feature_time_ranges)
+            self._draw_features()
+
+    def _time_ranges_dialog(self) -> None:
+        """Window to set the time range dt of each feature, around the date t of the observation."""
+        dialog = tk.Toplevel(self.master, background=theme.WHITE)
+        dialog.title("Time ranges")
+        dialog.transient(self.master)
+        dialog.resizable(False, False)
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="Time ranges", font=self._fonts.title).grid(
+            row=0, column=0, columnspan=4, sticky=tk.W, pady=(0, 10)
+        )
+        ttk.Label(
+            frame,
+            text="The contours of each feature are looked for in [t - dt, t + dt], t being the\n"
+            "date of the observation. With dt = 0, the contours of the date closest to t\n"
+            "are displayed.",
+            justify=tk.LEFT,
+        ).grid(row=1, column=0, columnspan=4, sticky=tk.W, pady=(0, 12))
+        ttk.Label(frame, text="dt (seconds)", style="Field.TLabel").grid(
+            row=2, column=2, sticky=tk.W, pady=(0, 4)
+        )
+
+        values: dict[str, tk.StringVar] = {}
+        for index, feature in enumerate(FEATURES, start=3):
+            swatch = tk.Canvas(
+                frame, width=26, height=14, background=theme.WHITE, highlightthickness=0
+            )
+            swatch.create_line(2, 7, 24, 7, fill=theme.NIGHT, width=5, capstyle=tk.ROUND)
+            swatch.create_line(2, 7, 24, 7, fill=feature.color, width=3, capstyle=tk.ROUND)
+            swatch.grid(row=index, column=0, padx=(0, 8))
+            ttk.Label(frame, text=feature.label).grid(
+                row=index, column=1, sticky=tk.W, padx=(0, 16)
+            )
+            value = tk.StringVar(value=str(self._time_range(feature)))
+            ttk.Spinbox(
+                frame, from_=0, to=MAX_TIME_RANGE_S, increment=600, textvariable=value, width=9
+            ).grid(row=index, column=2, sticky=tk.W, pady=2)
+            hint = ttk.Label(frame, style="Field.TLabel", width=22)
+            hint.grid(row=index, column=3, sticky=tk.W, padx=(10, 0))
+
+            def show(*args: object, value: tk.StringVar = value, hint: ttk.Label = hint) -> None:
+                try:
+                    seconds = int(value.get())
+                except ValueError:
+                    hint.configure(text="")
+                    return
+                hint.configure(
+                    text="closest date" if seconds == 0 else f"± {format_duration(seconds)}"
+                )
+
+            value.trace_add("write", show)
+            show()
+            values[feature.key] = value
+
+        def reset() -> None:
+            """Reset the time ranges of all the features to 0 s, after a confirmation."""
+            fields = [value.get().strip() for value in values.values()]
+            if not self._uses_time_ranges() and all(field == "0" for field in fields):
+                messagebox.showinfo(
+                    "Time ranges",
+                    "The time ranges of all the features are already 0 s.",
+                    parent=dialog,
+                )
+                return
+            if not messagebox.askyesno(
+                "Reset the time ranges",
+                "Reset the time ranges dt of all the features to 0 s?\n\n"
+                "The contours of the date closest to the observation will be displayed "
+                "again, and the contours will be colored by feature.",
+                icon=messagebox.WARNING,
+                parent=dialog,
+            ):
+                return
+            for value in values.values():
+                value.set("0")
+            dialog.destroy()
+            self._busy(
+                lambda: self._set_time_ranges({feature.key: 0 for feature in FEATURES}),
+                "Loading the features…",
+            )
+
+        def save() -> None:
+            ranges = {}
+            for feature in FEATURES:
+                try:
+                    seconds = int(values[feature.key].get())
+                    if not 0 <= seconds <= MAX_TIME_RANGE_S:
+                        raise ValueError(seconds)
+                except ValueError:
+                    messagebox.showerror(
+                        "Time ranges",
+                        f"The time range of the {feature.label.lower()} must be a number of "
+                        f"seconds between 0 and {MAX_TIME_RANGE_S} "
+                        f"({format_duration(MAX_TIME_RANGE_S)}).",
+                        parent=dialog,
+                    )
+                    return
+                ranges[feature.key] = seconds
+            dialog.destroy()
+            self._busy(lambda: self._set_time_ranges(ranges), "Loading the features…")
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=len(FEATURES) + 3, column=0, columnspan=4, sticky=tk.EW, pady=(16, 0))
+        ttk.Button(buttons, text="Reset", style="Secondary.TButton", command=reset).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(buttons, text="Save", command=save).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Cancel", style="Secondary.TButton", command=dialog.destroy).pack(
+            side=tk.RIGHT, padx=(0, 10)
+        )
+        self._dialog = dialog
 
     def _show_help(self) -> None:
         msg = (

@@ -29,6 +29,10 @@ Unreleased
   helio.support@sympa.obspm.fr
 * api: ``HQIClient.ping()`` and ``pyhfc.api.quicklook.server_reachable()`` check that
   the HQI and a server of images are reachable
+* hfcviewer: time range dt of each feature (*Options > Set time ranges*, 0 by default):
+  the contours detected in [t - dt, t + dt] around the date t of the observation are
+  displayed on the same image, colored by tracking by default; a *Reset* button sets
+  all the time ranges back to 0 s, after a confirmation
 * hfcviewer: faster redraws, the quicklook image being processed once per observation
   and only the contours being redrawn when the features or their colors change
 

@@ -870,3 +870,209 @@ def test_viewer_about(
         "<Button-1>"
     )
     assert opened == ["mailto:helio.support@sympa.obspm.fr"]
+
+
+# ________________ Time ranges ___________________
+
+
+@pytest.mark.parametrize(
+    ("seconds", "text"),
+    [(0, "0 s"), (45, "45 s"), (600, "10 min"), (5400, "1 h 30 min"), (90_061, "1 d 1 h")],
+)
+def test_format_duration(seconds: int, text: str) -> None:
+    assert viewer.format_duration(seconds) == text
+
+
+def test_feature_query_time_range() -> None:
+    feature = viewer.FEATURE_BY_KEY["ar"]
+    assert sql_where(viewer.feature_query(feature, DATE, 0)["where"]) == (
+        "(DATE_OBS BETWEEN '2012-06-01 11:00:00' AND '2012-06-01 13:00:00')"
+    )
+    assert sql_where(viewer.feature_query(feature, DATE, 10_800)["where"]) == (
+        "(DATE_OBS BETWEEN '2012-06-01 09:00:00' AND '2012-06-01 15:00:00')"
+    )
+
+
+def test_select_features() -> None:
+    rows = [
+        {"DATE_OBS": "2012-06-01T13:30:00", "ID": 1},
+        {"DATE_OBS": "2012-06-01T11:00:00", "ID": 2},
+        {"DATE_OBS": "2012-06-01T12:10:00", "ID": 3},
+    ]
+    # dt = 0: the features of the closest date only
+    assert [row["ID"] for row in viewer.select_features(rows, DATE, 0)] == [3]
+    # dt > 0: all of them, sorted by date
+    assert [row["ID"] for row in viewer.select_features(rows, DATE, 7200)] == [2, 3, 1]
+
+
+FEATURE_ROWS = [
+    {**FEATURE_ROW, "DATE_OBS": "2012-06-02T05:00:00", "CC_X_PIX": 12},
+    {**FEATURE_ROW, "DATE_OBS": "2012-06-02T07:00:00"},
+    {**FEATURE_ROW, "DATE_OBS": "2012-06-02T08:30:00", "CC_X_PIX": 14},
+]
+
+
+def test_viewer_time_ranges(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
+    fake_service.responses += [
+        make_response([OBS_ROW]),
+        make_response(FEATURE_ROWS),  # active regions, dt = 0
+        make_response([], [("DATE_OBS", "char")]),  # coronal holes, dt = 0
+        make_response(FEATURE_ROWS),  # active regions, dt = 3 h
+    ]
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=["ar", "ch"])
+    # default (dt = 0): the contours of the date closest to the observation
+    assert len(app._plt.lines) == 1
+    assert app._feat_count["ar"].get() == "1"
+    assert "1 active region" in app._status.get()
+    assert "±" not in app._status.get()
+
+    assert app._feat_ct.get() == 0  # colors by feature
+    assert app._plt.lines[0].get_color() == viewer.FEATURE_BY_KEY["ar"].color
+
+    # dt = 3 h for the active regions: all the contours of [t - 3 h, t + 3 h]
+    app._set_time_ranges({"ar": 10_800, "ch": 0})
+    query = fake_service.params[-1]
+    assert query["FROM"] == ["VIEW_AR_HQI"]
+    assert "'2012-06-02 04:01:45' AND '2012-06-02 10:01:45'" in query["WHERE"]
+    assert len(fake_service.calls) == 4  # the coronal holes were not loaded again
+    assert len(app._plt.lines) == 3
+    assert app._feat_count["ar"].get() == "3 · ±3 h"
+    assert app._feat_count["ch"].get() == "none"
+    assert "3 active regions (±3 h)" in app._status.get()
+    # contours of several observations: colored by tracking, by default
+    assert app._feat_ct.get() == 1
+    assert {line.get_color() for line in app._plt.lines} == {viewer.track_color(3)}
+    # saved in the settings
+    assert cache_module.Settings.load().feature_time_ranges == {"ar": 10_800}
+
+    # unchanged time ranges: nothing is loaded again
+    app._set_time_ranges({"ar": 10_800, "ch": 0})
+    assert len(fake_service.calls) == 4
+
+
+def test_viewer_time_ranges_dialog(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
+    errors: list[str] = []
+    monkeypatch.setattr("tkinter.messagebox.showerror", lambda title, msg, **kw: errors.append(msg))
+    fake_service.responses.append(make_response([OBS_ROW]))
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+    last = app._menubar.index("end")
+    assert last is not None
+    options = next(
+        app._menubar.nametowidget(app._menubar.entrycget(i, "menu"))
+        for i in range(last + 1)
+        if app._menubar.entrycget(i, "label") == "Options"
+    )
+    labels = [options.entrycget(i, "label") for i in range((options.index("end") or 0) + 1)]
+    assert labels == ["Set colors", "Set time ranges…"]
+
+    applied: list[dict[str, int]] = []
+    monkeypatch.setattr(app, "_set_time_ranges", lambda ranges: applied.append(ranges))
+    app._time_ranges_dialog()
+    dialog = app._dialog
+    assert dialog is not None
+    assert dialog.title() == "Time ranges"
+    found = all_widgets(dialog)
+    spinboxes = [w for w in found if isinstance(w, ttk.Spinbox)]
+    buttons = {w.cget("text"): w for w in found if isinstance(w, ttk.Button)}
+    texts = [str(w.cget("text")) for w in found if isinstance(w, ttk.Label)]
+    assert len(spinboxes) == len(viewer.FEATURES)
+    assert [box.get() for box in spinboxes] == ["0"] * len(viewer.FEATURES)
+    assert texts.count("closest date") == len(viewer.FEATURES)
+    assert {"Reset", "Cancel", "Save"} <= set(buttons)
+
+    spinboxes[0].set("5400")  # active regions
+    dialog.update_idletasks()
+    assert "± 1 h 30 min" in [str(w.cget("text")) for w in found if isinstance(w, ttk.Label)]
+    spinboxes[1].set("-1")  # coronal holes: invalid
+    buttons["Save"].invoke()
+    assert errors and "coronal holes" in errors[0]
+    assert applied == []
+    spinboxes[1].set("0")
+    buttons["Save"].invoke()
+    assert not dialog.winfo_exists()
+    assert applied == [{"ar": 5400, "ch": 0, "sp": 0, "rs": 0, "pr": 0, "fi": 0}]
+
+
+def test_viewer_time_ranges_reset(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The "Reset" button resets all the time ranges, after a confirmation."""
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
+    questions: list[tuple[str, str]] = []
+    answers = [False, True]
+
+    def askyesno(title: str, msg: str, **kwargs: object) -> bool:
+        questions.append((str(kwargs.get("icon")), msg))
+        return answers.pop(0)
+
+    infos: list[str] = []
+    monkeypatch.setattr("tkinter.messagebox.askyesno", askyesno)
+    monkeypatch.setattr("tkinter.messagebox.showinfo", lambda title, msg, **kw: infos.append(msg))
+    cache_module.Settings(feature_time_ranges={"ar": 3600, "fi": 600}).save()
+    fake_service.responses += [
+        make_response([OBS_ROW]),
+        make_response(FEATURE_ROWS),  # active regions, dt = 0 after the reset
+    ]
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+    app._feat_on["ar"].set(1)
+    app._feat_data["ar"] = list(FEATURE_ROWS)  # loaded with dt = 1 h
+
+    def reset_button(dialog: tk.Toplevel) -> ttk.Button:
+        return next(
+            w
+            for w in all_widgets(dialog)
+            if isinstance(w, ttk.Button) and w.cget("text") == "Reset"
+        )
+
+    # cancelled: nothing changes
+    app._time_ranges_dialog()
+    dialog = app._dialog
+    assert dialog is not None
+    reset_button(dialog).invoke()
+    assert questions[0][0] == "warning"
+    assert "all the features to 0 s" in questions[0][1]
+    assert dialog.winfo_exists()
+    assert app._settings.feature_time_ranges == {"ar": 3600, "fi": 600}
+
+    # confirmed: all the time ranges are 0 s, saved, and the features loaded again
+    reset_button(dialog).invoke()
+    assert not dialog.winfo_exists()
+    assert app._settings.feature_time_ranges == {}
+    assert cache_module.Settings.load().feature_time_ranges == {}
+    assert app._feat_ct.get() == 0  # colors by feature again
+    assert "'2012-06-02 06:01:45' AND '2012-06-02 08:01:45'" in fake_service.params[-1]["WHERE"]
+    assert len(app._plt.lines) == 1  # the contours of the closest date
+
+    # already 0: the user is told, without question
+    app._time_ranges_dialog()
+    assert app._dialog is not None
+    reset_button(app._dialog).invoke()
+    assert infos == ["The time ranges of all the features are already 0 s."]
+    assert len(questions) == 2
+
+
+def test_viewer_time_ranges_colors(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Colors by tracking by default when a time range is set, by feature when none is."""
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
+    cache_module.Settings(feature_time_ranges={"ar": 3600}).save()
+    fake_service.responses += [make_response([OBS_ROW]) for _ in range(2)]
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+    assert app._feat_ct.get() == 1  # time range saved in the settings
+    # the user can still choose the colors by feature
+    app._feat_ct.set(0)
+    app._set_time_ranges({"ar": 7200})  # still a time range: the choice is kept
+    assert app._feat_ct.get() == 0
+    app._set_time_ranges({"ar": 0})  # no time range: colors by feature
+    assert app._feat_ct.get() == 0
+    app._set_time_ranges({"fi": 600})
+    assert app._feat_ct.get() == 1
+    cache_module.Settings().save()
+    assert viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])._feat_ct.get() == 0
