@@ -2,6 +2,42 @@ hfcViewer CHANGELOG
 -------------------
 
 
+Unreleased
+==========
+* hfcviewer: display by default the most recent SDO/AIA observation at the current
+  date and time, with the active regions and the coronal holes
+* hfcviewer: add a *Latest* button, displaying the most recent observation of the
+  selected data set, and a ``-f/--features`` option choosing the features to display
+* hfcviewer: new look inspired by the LIRA visual identity (anthracite header with
+  the LIRA logo and a violet accent, flat ttk widgets, Avenir/Noto fonts), with
+  readable data set names, a legend of the contour colors with the number of
+  contours, units in the plot titles (e.g. ``17.1 nm``, or the frequency for the
+  Nançay radioheliograph, e.g. ``150 MHz``), contours outlined to be visible on any
+  image, and a status bar
+* hfcviewer: disk cache of the quicklook images, with a *Settings* menu to change its
+  maximum size (500 MB by default) and to empty it; when the cache is full, the user
+  is warned and the new images are no longer cached
+* hfcviewer: cache also the responses of the HQI (observations and features); the
+  responses with observations of the last 7 days expire after one hour
+* api: ``HQIClient`` accepts a response cache (``cache`` argument, ``use_cache`` to
+  bypass it for a query)
+* hfcviewer: lights in the status bar telling whether the HQI service and the server
+  of the images are reachable, checked in the background every minute (interval set
+  in the *Settings* menu)
+* hfcviewer: links to the PyPI page of pyhfc (version in the status bar), to the LIRA
+  website (logo), and in the *About* window, with the new support address
+  helio.support@sympa.obspm.fr
+* api: ``HQIClient.ping()`` and ``pyhfc.api.quicklook.server_reachable()`` check that
+  the HQI and a server of images are reachable
+* hfcviewer: time range dt of each feature (*Options > Set time ranges*, 0 by default):
+  the contours detected in [t - dt, t + dt] around the date t of the observation are
+  displayed on the same image, colored by tracking by default; a *Reset* button sets
+  all the time ranges back to 0 s, after a confirmation
+* hfcviewer: *Help > HFC database content* opens the web page giving the content
+  of the HFC database
+* hfcviewer: faster redraws, the quicklook image being processed once per observation
+  and only the contours being redrawn when the features or their colors change
+
 Version 0.3.0
 =============
 * Rename the Python package to ``pyhfc`` (the viewer command is still ``hfcviewer``)

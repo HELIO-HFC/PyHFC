@@ -69,9 +69,48 @@ or, equivalently::
 
     uv run python -m pyhfc.hfcviewer
 
-For instance, to display the Meudon H-alpha observation nearest to a date::
+By default, the viewer displays the most recent SDO/AIA observation at the
+current date and time, with the active regions and the coronal holes detected
+on it (note that the HFC has no coronal holes after 2013-10-13). The *Previous*
+and *Next* buttons browse the observations of the selected data set, and the
+*Latest* button goes back to its most recent observation.
 
-    uv run hfcviewer -d 2012-06-01T12:00:00 -o Meudon -i Spectroheliograph -w Halpha
+For instance, to display the Meudon H-alpha observation nearest to a date,
+with the filaments and the prominences::
+
+    uv run hfcviewer -d 2012-06-01T12:00:00 -o Meudon -i Spectroheliograph -w Halpha -f fi,pr
+
+The features to display are given with ``-f`` (``ar``: active regions, ``ch``:
+coronal holes, ``sp``: sunspots, ``rs``: radio sources, ``pr``: prominences,
+``fi``: filaments; ``-f ""`` for none).
+
+By default, the contours of a feature are the ones detected at the date closest
+to the date t of the displayed observation. A time range dt can be set for each
+feature in *Options > Set time ranges*: the contours detected in [t - dt, t + dt]
+are then all displayed on the same image, e.g. to follow the evolution of the
+active regions. The contours are then colored by tracking by default (a feature
+keeps its color from one observation to the other); *Contour colors* allows to
+color them by feature again.
+
+The status bar shows two lights telling whether the HQI service (observations
+and features) and the server of the quicklook images (FTP) are reachable (green)
+or not (red). They are checked every minute, in the background; the interval
+can be changed in the *Settings* menu (*Server checks*). The version of pyhfc, at
+the right of the status bar, is a link to its PyPI page, and the LIRA logo a link
+to the LIRA website. *Help > HFC database content* opens the web page giving the
+content of the HFC database (observations and features available).
+
+The quicklook images, and the data returned by the HQI (observations and
+features), are kept in a disk cache, so that they are displayed faster the next
+times (about 7 times faster for SDO/AIA images). The data of the last 7 days are
+cached for one hour only, as the HFC may still complete them, and the most recent
+observation (*Latest* button) is always queried. 50 SDO/AIA images with their
+active regions take about 50 MB. The cache is stored in the user cache directory
+(``~/Library/Caches/pyhfc`` on macOS, ``~/.cache/pyhfc`` on Linux; set the
+``PYHFC_CACHE_DIR`` environment variable to use another directory). Its maximum
+size is 500 MB by default (about 500 SDO/AIA images): it can be changed, and
+the cache emptied, in the *Settings* menu. When the cache is full, the viewer
+says it, and the new images and data are no longer cached.
 
 To display help, run::
 

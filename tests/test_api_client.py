@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from email.message import Message
 from pathlib import Path
-from urllib.error import URLError
+from typing import ClassVar
+from urllib.error import HTTPError, URLError
 
 import pytest
 import suds
@@ -22,7 +24,14 @@ from pyhfc.api import (
     quicklook_url,
 )
 from pyhfc.api import quicklook as quicklook_module
-from pyhfc.api.client import BUNDLED_SCHEMAS, bundled_schemas
+from pyhfc.api.client import (
+    BUNDLED_SCHEMAS,
+    RECENT_MAX_AGE,
+    UNDATED_MAX_AGE,
+    bundled_schemas,
+    response_max_age,
+)
+from pyhfc.api.votable import QueryResponse, parse_response
 
 DATE = datetime(2012, 6, 1, 12, 0, 0)
 DATE_ROW = [{"DATE_OBS": "2012-06-02T07:01:45"}]
@@ -280,3 +289,198 @@ def test_bundled_schemas() -> None:
         content = store.open(f"http://{location}")
         assert content is not None
         assert b"<xs:schema" in content
+
+
+# ________________ Response cache ________________
+
+
+class MemoryCache:
+    """Response cache in memory, recording the maximum ages."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, bytes] = {}
+        self.max_ages: dict[str, float | None] = {}
+
+    def get(self, key: str) -> bytes | None:
+        return self.data.get(key)
+
+    def put(self, key: str, data: bytes, max_age: float | None = None) -> bool:
+        self.data[key] = data
+        self.max_ages[key] = max_age
+        return True
+
+
+def test_cache_avoids_queries(fake_service: FakeService) -> None:
+    memory = MemoryCache()
+    hqi = HQIClient(cache=memory)
+    fake_service.responses.append(make_response(DATE_ROW))
+    first = hqi.select("VIEW_AR_HQI", what="DATE_OBS", limit=1)
+    second = hqi.select("VIEW_AR_HQI", what="DATE_OBS", limit=1)
+    assert len(fake_service.calls) == 1
+    assert second.rows == first.rows
+    assert second.votable == first.votable
+    # an old observation: cached without expiration
+    assert list(memory.max_ages.values()) == [None]
+
+
+def test_cache_hit_does_not_need_the_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    memory = MemoryCache()
+    hqi = HQIClient(cache=memory)
+    key = hqi.cache_key("SQLSelect", {"WHAT": "*", "FROM": ["T"]})
+    memory.data[key] = make_response(DATE_ROW, envelope=False)
+
+    def no_service(self: HQIClient) -> None:
+        raise AssertionError("the service must not be reached")
+
+    monkeypatch.setattr(HQIClient, "soap_client", property(no_service))
+    assert hqi.select("T").first() == {"DATE_OBS": datetime(2012, 6, 2, 7, 1, 45)}
+
+
+def test_cache_untyped_client(fake_service: FakeService) -> None:
+    memory = MemoryCache()
+    fake_service.responses.append(make_response(DATE_ROW))
+    HQIClient(cache=memory).select("T")
+    # the cached VOTable is converted according to the client settings
+    assert HQIClient(cache=memory, typed=False).select("T").rows == DATE_ROW
+
+
+def test_cache_skips_empty_and_error_responses(fake_service: FakeService) -> None:
+    memory = MemoryCache()
+    hqi = HQIClient(cache=memory)
+    fake_service.responses += [
+        make_response([], [("DATE_OBS", "char")]),
+        make_response(status="ERROR", error="Bad SQL"),
+        make_response(DATE_ROW),
+    ]
+    assert not hqi.select("T")
+    with pytest.raises(HQIQueryError):
+        hqi.select("NOPE")
+    assert memory.data == {}
+    # the empty response was not cached: the service is queried again
+    assert hqi.select("T").rows
+    assert len(fake_service.calls) == 3
+
+
+def test_cache_disabled_for_a_query(fake_service: FakeService) -> None:
+    memory = MemoryCache()
+    hqi = HQIClient(cache=memory)
+    fake_service.responses += [make_response(DATE_ROW), make_response(DATE_ROW)]
+    hqi.select("T", use_cache=False)
+    hqi.select("T", use_cache=False)
+    assert len(fake_service.calls) == 2
+    assert memory.data == {}
+
+
+def test_cache_key() -> None:
+    hqi = HQIClient()
+    key = hqi.cache_key("SQLSelect", {"FROM": ["T"], "WHAT": "*"})
+    assert key == hqi.cache_key("SQLSelect", {"WHAT": "*", "FROM": ["T"]})
+    assert key != hqi.cache_key("SQLSelect", {"WHAT": "*", "FROM": ["U"]})
+    assert key != HQIClient("http://other/wsdl").cache_key(
+        "SQLSelect", {"WHAT": "*", "FROM": ["T"]}
+    )
+
+
+def test_response_max_age() -> None:
+    now = datetime(2026, 10, 2, 12, 0, 0)
+
+    def response(*dates: str) -> QueryResponse:
+        rows = [{"DATE_OBS": d} for d in dates]
+        return parse_response(make_response(rows, [("DATE_OBS", "char")]))
+
+    assert response_max_age(response("2012-06-01T12:00:00"), now) is None
+    assert response_max_age(response("2026-09-30T08:00:00"), now) == RECENT_MAX_AGE
+    # the most recent observation decides
+    assert response_max_age(response("2012-06-01T12:00:00", "2026-10-02T07:59:33"), now) == (
+        RECENT_MAX_AGE
+    )
+    tables = parse_response(make_response([{"TABLE_NAMES": "VIEW_AR_HQI"}]))
+    assert response_max_age(tables, now) == UNDATED_MAX_AGE
+
+
+# ________________ Server checks _________________
+
+
+class FakeHTTPResponse:
+    def __init__(self, status: int = 200) -> None:
+        self.status = status
+
+    def __enter__(self) -> FakeHTTPResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        pass
+
+    def read(self, size: int = -1) -> bytes:
+        return b"<"
+
+
+def test_ping(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls: list[str] = []
+
+    def ok(url: str, timeout: float) -> FakeHTTPResponse:
+        urls.append(url)
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr("pyhfc.api.client.urlopen", ok)
+    assert HQIClient("http://example.org/wsdl").ping(timeout=3)
+    assert urls == ["http://example.org/wsdl"]
+
+    def down(url: str, timeout: float) -> None:
+        raise URLError("unreachable")
+
+    monkeypatch.setattr("pyhfc.api.client.urlopen", down)
+    assert not HQIClient().ping()
+
+
+class FakeFTP:
+    welcome: ClassVar[str] = "220 Welcome"
+    error: ClassVar[Exception | None] = None
+    connections: ClassVar[list[tuple[str, int]]] = []
+
+    def __init__(self, timeout: float) -> None:
+        self.timeout = timeout
+
+    def connect(self, host: str, port: int) -> str:
+        if FakeFTP.error is not None:
+            raise FakeFTP.error
+        FakeFTP.connections.append((host, port))
+        return FakeFTP.welcome
+
+    def close(self) -> None:
+        pass
+
+
+def test_server_reachable_ftp(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("pyhfc.api.quicklook.ftplib.FTP", FakeFTP)
+    FakeFTP.connections = []
+    FakeFTP.error = None
+    assert quicklook_module.server_reachable("ftp://ftp.example.org/pub/image.png")
+    assert quicklook_module.server_reachable("ftp://ftp.example.org:2121/")
+    assert FakeFTP.connections == [("ftp.example.org", 21), ("ftp.example.org", 2121)]
+    FakeFTP.error = OSError("timed out")
+    assert not quicklook_module.server_reachable("ftp://ftp.example.org/")
+    FakeFTP.error = None
+
+
+def test_server_reachable_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[tuple[str, str | None]] = []
+
+    def head(request: object, timeout: float) -> FakeHTTPResponse:
+        requests.append((request.full_url, request.get_method()))  # type: ignore[attr-defined]
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr("pyhfc.api.quicklook.urlopen", head)
+    assert quicklook_module.server_reachable("https://example.org/a/b.png")
+    assert requests == [("https://example.org/", "HEAD")]
+
+    def not_found(request: object, timeout: float) -> None:
+        raise HTTPError("https://example.org/", 404, "Not found", Message(), None)
+
+    monkeypatch.setattr("pyhfc.api.quicklook.urlopen", not_found)
+    assert quicklook_module.server_reachable("https://example.org/")  # the server answered
+
+
+@pytest.mark.parametrize("url", ["nothing", "file:///tmp/image.png", "ftp:///no-host"])
+def test_server_reachable_invalid_url(url: str) -> None:
+    assert not quicklook_module.server_reachable(url)

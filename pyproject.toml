@@ -70,6 +70,9 @@ select = [
     "RUF", # ruff-specific rules
 ]
 
+# Characters used on purpose in the viewer (H-alpha line, navigation arrows)
+allowed-confusables = ["α", "‹", "›"]
+
 [tool.ruff.lint.pep8-naming]
 # SQL clause keywords (WHAT, FROM, WHERE, ...) are the web service parameter names.
 ignore-names = ["WHAT", "FROM", "WHERE", "ORDER_BY", "LIMIT"]
