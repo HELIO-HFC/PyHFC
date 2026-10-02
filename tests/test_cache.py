@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
 
 from pyhfc.hfcviewer import cache
-from pyhfc.hfcviewer.cache import MB, ImageCache, Settings
+from pyhfc.hfcviewer.cache import HQI, IMAGES, MB, DiskCache, HQIResponseCache, Settings
 
 URL = "ftp://example.org/qclk/2012/image.png"
 
@@ -43,7 +44,7 @@ def test_user_dirs_from_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
 def test_settings(tmp_path: Path) -> None:
     path = tmp_path / "settings" / "hfcviewer.json"
-    assert Settings.load(path) == Settings(cache_max_size_mb=100)  # default
+    assert Settings.load(path) == Settings(cache_max_size_mb=500)  # default
     Settings(cache_max_size_mb=250).save(path)
     assert json.loads(path.read_text()) == {"cache_max_size_mb": 250}
     assert Settings.load(path).cache_max_size_mb == 250
@@ -59,25 +60,29 @@ def test_settings_invalid(tmp_path: Path, content: str) -> None:
 def test_settings_default_path_and_cache() -> None:
     # isolated in temporary directories by the conftest
     assert Settings.default_path() == cache.user_config_dir() / "hfcviewer.json"
-    image_cache = ImageCache.from_settings(Settings(cache_max_size_mb=5))
-    assert image_cache.directory == cache.user_cache_dir() / "images"
-    assert image_cache.max_size == 5 * MB
+    disk_cache = DiskCache.from_settings(Settings(cache_max_size_mb=5))
+    assert disk_cache.directory == cache.user_cache_dir()
+    assert disk_cache.max_size == 5 * MB
+    # the images are in the "images" subdirectory, as before
+    assert disk_cache.path(URL).parent == cache.user_cache_dir() / "images"
 
 
 def test_cache_put_get(tmp_path: Path) -> None:
-    image_cache = ImageCache(tmp_path / "images", 1000)
-    assert image_cache.get(URL) is None
-    assert len(image_cache) == 0
-    assert image_cache.size() == 0
-    assert image_cache.put(URL, b"x" * 300)
-    assert image_cache.get(URL) == b"x" * 300
-    assert image_cache.put(URL, b"x" * 300)  # already cached
-    assert len(image_cache) == 1
-    assert image_cache.size() == 300
+    disk_cache = DiskCache(tmp_path, 1000)
+    assert disk_cache.get(URL) is None
+    assert len(disk_cache) == 0
+    assert disk_cache.size() == 0
+    assert disk_cache.put(URL, b"x" * 300)
+    assert disk_cache.get(URL) == b"x" * 300
+    assert disk_cache.put(URL, b"x" * 300)  # already cached
+    assert len(disk_cache) == 1
+    assert disk_cache.size() == 300
     # stored with the extension of the url, without temporary files left
-    assert [path.suffix for path in image_cache.files()] == [".png"]
-    image_cache.remove(URL)
-    assert image_cache.get(URL) is None
+    assert [path.suffix for path in disk_cache.files()] == [".png"]
+    assert disk_cache.files(IMAGES) == disk_cache.files()
+    assert disk_cache.count(HQI) == 0
+    disk_cache.remove(URL)
+    assert disk_cache.get(URL) is None
 
 
 @pytest.mark.parametrize(
@@ -89,41 +94,86 @@ def test_cache_put_get(tmp_path: Path) -> None:
     ],
 )
 def test_cache_path(tmp_path: Path, url: str, suffix: str) -> None:
-    path = ImageCache(tmp_path, 10).path(url)
-    assert path.parent == tmp_path
+    path = DiskCache(tmp_path, 10).path(url)
+    assert path.parent == tmp_path / "images"
     assert path.suffix == suffix
     assert len(path.stem) == 64
 
 
 def test_cache_full(tmp_path: Path) -> None:
-    image_cache = ImageCache(tmp_path, 1000)
-    assert image_cache.put("ftp://h/1.png", b"x" * 600)
-    assert not image_cache.full
+    disk_cache = DiskCache(tmp_path, 1000)
+    assert disk_cache.put("ftp://h/1.png", b"x" * 600)
+    assert not disk_cache.full
     # would exceed the maximum size: not stored, and the cache is full
-    assert not image_cache.put("ftp://h/2.png", b"x" * 600)
-    assert image_cache.full
+    assert not disk_cache.put("ftp://h/2.png", b"x" * 600)
+    assert disk_cache.full
     # no new image is stored, even a small one
-    assert not image_cache.put("ftp://h/3.png", b"x")
-    assert len(image_cache) == 1
+    assert not disk_cache.put("ftp://h/3.png", b"x")
+    assert len(disk_cache) == 1
     # increasing the maximum size allows to store images again
-    image_cache.max_size = 2000
-    assert not image_cache.full
-    assert image_cache.put("ftp://h/2.png", b"x" * 600)
+    disk_cache.max_size = 2000
+    assert not disk_cache.full
+    assert disk_cache.put("ftp://h/2.png", b"x" * 600)
 
 
 def test_cache_clear(tmp_path: Path) -> None:
-    image_cache = ImageCache(tmp_path, 100)
-    image_cache.put("ftp://h/1.png", b"x" * 60)
-    image_cache.put("ftp://h/2.png", b"x" * 60)
-    assert image_cache.full
-    assert image_cache.clear() == 1
-    assert not image_cache.full
-    assert len(image_cache) == 0
-    assert image_cache.put("ftp://h/2.png", b"x" * 60)
+    disk_cache = DiskCache(tmp_path, 100)
+    disk_cache.put("ftp://h/1.png", b"x" * 60)
+    disk_cache.put("ftp://h/2.png", b"x" * 60)
+    assert disk_cache.full
+    assert disk_cache.clear() == 1
+    assert not disk_cache.full
+    assert len(disk_cache) == 0
+    assert disk_cache.put("ftp://h/2.png", b"x" * 60)
 
 
 def test_cache_zero_size(tmp_path: Path) -> None:
-    image_cache = ImageCache(tmp_path, 0)
-    assert not image_cache.put(URL, b"x")
-    assert image_cache.full
-    assert image_cache.files() == []
+    disk_cache = DiskCache(tmp_path, 0)
+    assert not disk_cache.put(URL, b"x")
+    assert disk_cache.full
+    assert disk_cache.files() == []
+
+
+def test_cache_sections_share_the_maximum_size(tmp_path: Path) -> None:
+    disk_cache = DiskCache(tmp_path, 1000)
+    assert disk_cache.put("ftp://h/1.png", b"x" * 500)
+    assert disk_cache.put("abc", b"y" * 400, HQI)
+    assert disk_cache.path("abc", HQI) == tmp_path / "hqi" / "abc.xml"
+    assert disk_cache.count(IMAGES) == 1
+    assert disk_cache.count(HQI) == 1
+    assert len(disk_cache) == 2
+    assert disk_cache.size() == 900
+    # the whole cache is full, for all the sections
+    assert not disk_cache.put("ftp://h/2.png", b"x" * 200)
+    assert disk_cache.full
+    assert not disk_cache.put("def", b"y", HQI)
+    assert disk_cache.clear() == 2
+
+
+def test_hqi_response_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    disk_cache = DiskCache(tmp_path, 10_000)
+    responses = HQIResponseCache(disk_cache)
+    assert responses.get("key") is None
+    assert responses.put("key", b"<VOTABLE/>")  # no expiration
+    assert responses.put("recent", b"<VOTABLE>recent</VOTABLE>", max_age=60)
+    assert responses.get("key") == b"<VOTABLE/>"
+    assert responses.get("recent") == b"<VOTABLE>recent</VOTABLE>"
+    assert disk_cache.count(HQI) == 2
+
+    # one hour later: the recent response has expired, and is removed
+    now = time.time()
+    monkeypatch.setattr("pyhfc.hfcviewer.cache.time.time", lambda: now + 3600)
+    assert responses.get("recent") is None
+    assert responses.get("key") == b"<VOTABLE/>"
+    assert disk_cache.count(HQI) == 1
+    # an expired response can be cached again
+    assert responses.put("recent", b"<VOTABLE>new</VOTABLE>", max_age=60)
+    assert responses.get("recent") == b"<VOTABLE>new</VOTABLE>"
+
+
+def test_hqi_response_cache_invalid_file(tmp_path: Path) -> None:
+    disk_cache = DiskCache(tmp_path, 10_000)
+    disk_cache.put("bad", b"no header", HQI)
+    responses = HQIResponseCache(disk_cache)
+    assert responses.get("bad") is None
+    assert disk_cache.count(HQI) == 0

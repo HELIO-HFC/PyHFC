@@ -15,8 +15,12 @@ Unreleased
   Nançay radioheliograph, e.g. ``150 MHz``), contours outlined to be visible on any
   image, and a status bar
 * hfcviewer: disk cache of the quicklook images, with a *Settings* menu to change its
-  maximum size (100 MB by default) and to empty it; when the cache is full, the user
+  maximum size (500 MB by default) and to empty it; when the cache is full, the user
   is warned and the new images are no longer cached
+* hfcviewer: cache also the responses of the HQI (observations and features); the
+  responses with observations of the last 7 days expire after one hour
+* api: ``HQIClient`` accepts a response cache (``cache`` argument, ``use_cache`` to
+  bypass it for a query)
 * hfcviewer: faster redraws, the quicklook image being processed once per observation
   and only the contours being redrawn when the features or their colors change
 

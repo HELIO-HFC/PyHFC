@@ -30,7 +30,7 @@ from pyhfc.api.quicklook import fetch_image, is_remote, open_image
 from pyhfc.api.sql import and_conditions, sql_equals, sql_where, to_datetime
 from pyhfc.api.tables import OBS_TABLE, PP_TABLE
 from pyhfc.hfcviewer import theme
-from pyhfc.hfcviewer.cache import MB, ImageCache, Settings
+from pyhfc.hfcviewer.cache import HQI, IMAGES, MB, DiskCache, HQIResponseCache, Settings
 from pyhfc.improlib import auto_contrast, chain2image
 
 __author__ = "Xavier Bonnin"
@@ -264,6 +264,8 @@ def load_observation(
             where=and_conditions(dataset.where(), sql_where({"DATE_OBS": (None, date)})),
             order_by="DATE_OBS DESC",
             limit=1,
+            # depends on the current date: the service is always queried
+            use_cache=False,
         )
         return response.first()
     method = getattr(hqi, direction)
@@ -345,17 +347,21 @@ class Viewer(tk.Frame):
         dev: bool = False,
         features: Sequence[str] = FEATURE_KEYS,
         settings: Settings | None = None,
-        cache: ImageCache | None = None,
+        cache: DiskCache | None = None,
     ) -> None:
         super().__init__(master, background=theme.WHITE)
         self.master: tk.Tk = master
         self._fonts = theme.apply_theme(master)
-        # The HFC values are kept as strings, as returned by the service
-        self._hqi = HQIClient(URL_WSDL_DEV if dev else url_wsdl, typed=False)
-        # Settings, and disk cache of the quicklook images
+        # Settings, and disk cache of the quicklook images and of the HQI responses
         self._settings = settings if settings is not None else Settings.load()
-        self._cache = cache if cache is not None else ImageCache.from_settings(self._settings)
+        self._cache = cache if cache is not None else DiskCache.from_settings(self._settings)
         self._cache_full_warned = False
+        # The HFC values are kept as strings, as returned by the service
+        self._hqi = HQIClient(
+            URL_WSDL_DEV if dev else url_wsdl,
+            typed=False,
+            cache=HQIResponseCache(self._cache),
+        )
 
         self._date = tk.StringVar(value=date or input_date(datetime.now()))
         self._obsid = tk.IntVar()
@@ -424,8 +430,8 @@ class Viewer(tk.Frame):
         self._menubar.add_cascade(label="Options", menu=optmenu)
 
         settingsmenu = tk.Menu(self._menubar, tearoff=0)
-        settingsmenu.add_command(label="Image cache…", command=self._cache_dialog)
-        settingsmenu.add_command(label="Empty the image cache…", command=self._empty_cache)
+        settingsmenu.add_command(label="Cache…", command=self._cache_dialog)
+        settingsmenu.add_command(label="Empty the cache…", command=self._empty_cache)
         self._menubar.add_cascade(label="Settings", menu=settingsmenu)
 
         helpmenu = tk.Menu(self._menubar, tearoff=0)
@@ -634,6 +640,7 @@ class Viewer(tk.Frame):
             messagebox.showwarning("WARNING", "NO DATA FOUND IN THE HFC!")
             return
 
+        self._check_cache_full()
         self.obs_data = row
         self._date.set(str(row["DATE_OBS"]))
         self._feat_data = {}
@@ -648,9 +655,7 @@ class Viewer(tk.Frame):
         self.image = self._busy(lambda: self._load_image(qclk_url), "Loading the quicklook image…")
         # processed once here, not at each redraw
         self._image_array = image_to_array(self.image) if self.image is not None else None
-        if self._cache.full and not self._cache_full_warned:
-            self._cache_full_warned = True
-            self._warn_cache_full()
+        self._check_cache_full()
 
     def _load_image(self, url: str) -> Image.Image | None:
         """Load an image, from the disk cache if it is there (else it is cached)."""
@@ -669,20 +674,27 @@ class Viewer(tk.Frame):
             self._cache.put(url, data)
         return image
 
-    # ________________ Image cache ___________________
+    # ________________ Cache _________________________
 
     def _cache_usage(self) -> str:
         return (
             f"{self._cache.size() / MB:.1f} MB used of {self._cache.max_size / MB:.4g} MB "
-            f"({plural(len(self._cache), 'image')})"
+            f"({plural(self._cache.count(IMAGES), 'image')}, "
+            f"{plural(self._cache.count(HQI), 'HQI response')})"
         )
+
+    def _check_cache_full(self) -> None:
+        """Warn the user (once) when the cache becomes full."""
+        if self._cache.full and not self._cache_full_warned:
+            self._cache_full_warned = True
+            self._warn_cache_full()
 
     def _warn_cache_full(self) -> None:
         messagebox.showwarning(
-            "Image cache full",
-            f"The image cache is full: {self._cache_usage()}.\n\n"
-            "The new quicklook images are no longer stored in the cache. "
-            "You can empty the cache, or increase its maximum size, "
+            "Cache full",
+            f"The cache is full: {self._cache_usage()}.\n\n"
+            "The new quicklook images and HQI data are no longer stored in the "
+            "cache. You can empty the cache, or increase its maximum size, "
             "in the Settings menu.",
         )
 
@@ -693,34 +705,34 @@ class Viewer(tk.Frame):
         self._cache.max_size = size_mb * MB
         if not self._cache.full:
             self._cache_full_warned = False
-        logger.info("Maximum size of the image cache: %i MB", size_mb)
+        logger.info("Maximum size of the cache: %i MB", size_mb)
 
     def _empty_cache(self, confirm: bool = True) -> None:
-        """Remove all the cached images (after a confirmation)."""
+        """Remove all the cached files (after a confirmation)."""
         number = len(self._cache)
         if number == 0:
-            messagebox.showinfo("Image cache", "The image cache is already empty.")
+            messagebox.showinfo("Cache", "The cache is already empty.")
             return
         if confirm and not messagebox.askyesno(
-            "Empty the image cache",
-            f"Remove {'the ' if number > 1 else ''}{plural(number, 'cached image')} "
+            "Empty the cache",
+            f"Remove {'the ' if number > 1 else ''}{plural(number, 'cached file')} "
             f"({self._cache.size() / MB:.1f} MB)?",
         ):
             return
         removed = self._cache.clear()
         self._cache_full_warned = False
-        self._status.set(f"{plural(removed, 'cached image')} removed")
+        self._status.set(f"{plural(removed, 'cached file')} removed")
 
     def _cache_dialog(self) -> None:
-        """Window to change the maximum size of the image cache, or to empty it."""
+        """Window to change the maximum size of the cache, or to empty it."""
         dialog = tk.Toplevel(self.master, background=theme.WHITE)
-        dialog.title("Image cache")
+        dialog.title("Cache")
         dialog.transient(self.master)
         dialog.resizable(False, False)
         frame = ttk.Frame(dialog, padding=20)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(frame, text="Image cache", font=self._fonts.title).grid(
+        ttk.Label(frame, text="Cache", font=self._fonts.title).grid(
             row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 10)
         )
         ttk.Label(frame, text="Location", style="Field.TLabel").grid(row=1, column=0, sticky=tk.W)
@@ -755,7 +767,7 @@ class Viewer(tk.Frame):
                     raise ValueError(size_mb)
             except ValueError:
                 messagebox.showerror(
-                    "Image cache",
+                    "Cache",
                     "The maximum size must be a positive number of MB.",
                     parent=dialog,
                 )
@@ -923,6 +935,7 @@ class Viewer(tk.Frame):
             logger.error("Querying HFC has failed: %s", err)
             messagebox.showerror("ERROR", "QUERYING HFC HAS FAILED!")
             return None
+        self._check_cache_full()
         rows = closest_rows(response.rows, date_obs)
         if not rows:
             logger.warning("No %s data found around this date in the HFC!", feature.label)

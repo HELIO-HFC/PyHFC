@@ -548,8 +548,9 @@ def test_viewer_cache_reuses_images(
     downloads, boxes, make = cached_viewer
     first = make()
     assert downloads == ["ftp://example.org/qclk/image.png"]
-    assert len(first._cache) == 1
-    assert first._cache.directory == cache_module.user_cache_dir() / "images"
+    assert first._cache.count(cache_module.IMAGES) == 1
+    assert first._cache.count(cache_module.HQI) == 1  # the observation query
+    assert first._cache.directory == cache_module.user_cache_dir()
     # the image of the same observation is read from the disk cache
     second = make()
     assert len(downloads) == 1
@@ -576,18 +577,18 @@ def test_viewer_cache_full(
     tmp_path: Path,
 ) -> None:
     downloads, boxes, make = cached_viewer
-    small = cache_module.ImageCache(tmp_path / "small", len(PNG_64) - 1)
+    small = cache_module.DiskCache(tmp_path / "small", 0)
     app = make(cache=small)
-    # the image is displayed, but not cached, and the user is warned once
+    # the data are displayed, but not cached, and the user is warned once
     assert app.image is not None
     assert len(small) == 0
     assert small.full
     assert [kind for kind, _ in boxes] == ["showwarning"]
-    assert "The image cache is full" in boxes[0][1]
+    assert "The cache is full" in boxes[0][1]
     assert "Settings menu" in boxes[0][1]
     app._load_qclk()
     assert len(boxes) == 1  # no new warning
-    assert len(small) == 0  # no new image cached
+    assert len(small) == 0  # nothing new cached
 
     # increasing the maximum size (saved in the settings) resumes the caching
     app._set_cache_max_size(1)
@@ -595,7 +596,7 @@ def test_viewer_cache_full(
     assert small.max_size == cache_module.MB
     assert not small.full
     app._load_qclk()
-    assert len(small) == 1
+    assert small.count(cache_module.IMAGES) == 1
     assert len(downloads) == 3
 
 
@@ -605,16 +606,16 @@ def test_viewer_empty_cache(
 ) -> None:
     _, boxes, make = cached_viewer
     app = make()
-    assert len(app._cache) == 1
+    assert len(app._cache) == 2  # the image and the observation query
     answers = [False, True]
     monkeypatch.setattr("tkinter.messagebox.askyesno", lambda title, msg: answers.pop(0))
     app._empty_cache()  # cancelled
-    assert len(app._cache) == 1
+    assert len(app._cache) == 2
     app._empty_cache()
     assert len(app._cache) == 0
-    assert app._status.get() == "1 cached image removed"
+    assert app._status.get() == "2 cached files removed"
     app._empty_cache()
-    assert boxes[-1] == ("showinfo", "The image cache is already empty.")
+    assert boxes[-1] == ("showinfo", "The cache is already empty.")
 
 
 def test_viewer_settings_menu_and_dialog(
@@ -630,7 +631,7 @@ def test_viewer_settings_menu_and_dialog(
     app._cache_dialog()
     dialog = app._dialog
     assert dialog is not None
-    assert dialog.title() == "Image cache"
+    assert dialog.title() == "Cache"
 
     def widgets(widget: tk.Misc) -> list[tk.Misc]:
         children = widget.winfo_children()
@@ -640,7 +641,7 @@ def test_viewer_settings_menu_and_dialog(
     spinbox = next(w for w in found if isinstance(w, ttk.Spinbox))
     buttons = {w.cget("text"): w for w in found if isinstance(w, ttk.Button)}
     labels = [str(w.cget("text")) for w in found if isinstance(w, ttk.Label)]
-    assert spinbox.get() == "100"
+    assert spinbox.get() == "500"
     assert {"Empty the cache", "Cancel", "Save"} <= set(buttons)
     usages = [
         w.getvar(str(w.cget("textvariable")))
@@ -648,7 +649,7 @@ def test_viewer_settings_menu_and_dialog(
         if isinstance(w, ttk.Label) and str(w.cget("textvariable"))
     ]
     assert usages == [app._cache_usage()]
-    assert usages[0].endswith("MB used of 100 MB (1 image)")
+    assert usages[0].endswith("MB used of 500 MB (1 image, 1 HQI response)")
     assert "Maximum size" in labels
 
     spinbox.set("abc")
@@ -666,3 +667,38 @@ def test_viewer_settings_menu_and_dialog(
 @pytest.mark.parametrize(("number", "text"), [(0, "0 images"), (1, "1 image"), (3, "3 images")])
 def test_plural(number: int, text: str) -> None:
     assert viewer.plural(number, "image") == text
+
+
+def test_viewer_cache_hqi_responses(
+    cached_viewer: tuple[list[str], list[tuple[str, str]], Callable[..., viewer.Viewer]],
+    fake_service: FakeService,
+    root: tk.Tk,
+) -> None:
+    """The observation and the features of a date are read from the cache the next times."""
+    downloads, _, _ = cached_viewer
+    fake_service.responses += [make_response([OBS_ROW]), make_response([FEATURE_ROW])]
+    first = viewer.Viewer(root, date="2012-06-01T12:00:00", features=["ar"])
+    assert len(fake_service.calls) == 2
+    assert first._cache.count(cache_module.HQI) == 2
+    lines = [np.asarray(line.get_xydata()).tolist() for line in first._plt.lines]
+
+    # no query to the service, nor download: everything comes from the cache
+    second = viewer.Viewer(root, date="2012-06-01T12:00:00", features=["ar"])
+    assert len(fake_service.calls) == 2
+    assert len(downloads) == 1
+    assert second._date.get() == first._date.get()
+    assert [np.asarray(line.get_xydata()).tolist() for line in second._plt.lines] == lines
+    assert second._status.get() == first._status.get()
+
+
+def test_viewer_latest_not_cached(
+    cached_viewer: tuple[list[str], list[tuple[str, str]], Callable[..., viewer.Viewer]],
+    fake_service: FakeService,
+    root: tk.Tk,
+) -> None:
+    """The most recent observation is always queried (it depends on the current date)."""
+    fake_service.responses += [make_response([OBS_ROW]), make_response([OBS_ROW])]
+    app = viewer.Viewer(root, features=[])
+    app._latest_btn.invoke()
+    assert len(fake_service.calls) == 2
+    assert app._cache.count(cache_module.HQI) == 0

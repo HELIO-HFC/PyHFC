@@ -84,13 +84,17 @@ The features to display are given with ``-f`` (``ar``: active regions, ``ch``:
 coronal holes, ``sp``: sunspots, ``rs``: radio sources, ``pr``: prominences,
 ``fi``: filaments; ``-f ""`` for none).
 
-The quicklook images are kept in a disk cache, so that they are displayed
-faster the next times. The cache is stored in the user cache directory
+The quicklook images, and the data returned by the HQI (observations and
+features), are kept in a disk cache, so that they are displayed faster the next
+times (about 7 times faster for SDO/AIA images). The data of the last 7 days are
+cached for one hour only, as the HFC may still complete them, and the most recent
+observation (*Latest* button) is always queried. 50 SDO/AIA images with their
+active regions take about 50 MB. The cache is stored in the user cache directory
 (``~/Library/Caches/pyhfc`` on macOS, ``~/.cache/pyhfc`` on Linux; set the
 ``PYHFC_CACHE_DIR`` environment variable to use another directory). Its maximum
-size is 100 MB by default: it can be changed, and the cache emptied, in the
-*Settings* menu. When the cache is full, the viewer says it, and the new images
-are no longer cached.
+size is 500 MB by default (about 500 SDO/AIA images): it can be changed, and
+the cache emptied, in the *Settings* menu. When the cache is full, the viewer
+says it, and the new images and data are no longer cached.
 
 To display help, run::
 
