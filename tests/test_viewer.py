@@ -15,10 +15,11 @@ import pytest
 from conftest import FakeService, make_response
 from PIL import Image
 
+from pyhfc import __version__
 from pyhfc.api import HQIClient, sql_where
 from pyhfc.api.sql import nearest_date_order
 from pyhfc.hfcviewer import cache as cache_module
-from pyhfc.hfcviewer import viewer
+from pyhfc.hfcviewer import theme, viewer
 
 DATE = datetime(2012, 6, 1, 12, 0, 0)
 
@@ -702,3 +703,170 @@ def test_viewer_latest_not_cached(
     app._latest_btn.invoke()
     assert len(fake_service.calls) == 2
     assert app._cache.count(cache_module.HQI) == 0
+
+
+# ________________ Server checks and links _______
+
+
+@pytest.fixture
+def opened(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Urls opened in the browser."""
+    urls: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda url: urls.append(url))
+    return urls
+
+
+def diode_color(app: viewer.Viewer, key: str) -> str:
+    canvas, item, _ = app._diodes[key]
+    return str(canvas.tk.call(str(canvas), "itemcget", item, "-fill"))
+
+
+def test_viewer_server_checks(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
+    checked: list[str] = []
+
+    def check(hqi: HQIClient, image_url: str) -> tuple[bool, bool]:
+        checked.append(image_url)
+        return True, False
+
+    monkeypatch.setattr(viewer, "check_servers", check)
+    fake_service.responses.append(make_response([OBS_ROW]))
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+    # not checked yet: grey lights, a check is scheduled immediately
+    assert diode_color(app, "hqi") == diode_color(app, "ftp") == theme.UNKNOWN
+    assert "not checked yet" in app._diodes["hqi"][2].text
+    assert app._ping_job is not None
+
+    # the check runs in a thread, its result is then shown
+    app._start_ping()
+    assert app._ping_thread is not None
+    app._ping_thread.join(timeout=5)
+    app._poll_ping()
+    assert checked == ["ftp://example.org/qclk"]  # server of the displayed image
+    assert diode_color(app, "hqi") == theme.OK
+    assert diode_color(app, "ftp") == theme.KO
+    assert app._diodes["hqi"][2].text.startswith(
+        "HQI service (observations and features): reachable"
+    )
+    assert "Images server: NOT reachable (checked at" in app._diodes["ftp"][2].text
+    # the next check is scheduled after the interval
+    assert app._ping_job is not None
+
+
+def test_viewer_server_check_interval(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
+    delays: list[int | None] = []
+    fake_service.responses.append(make_response([OBS_ROW]))
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+    assert app._settings.ping_interval_s == 60
+    schedule = app._schedule_ping
+
+    def recording_schedule(delay_ms: int | None = None) -> None:
+        delays.append(delay_ms)
+        schedule(delay_ms)
+
+    monkeypatch.setattr(app, "_schedule_ping", recording_schedule)
+    app._set_ping_interval(120)
+    assert cache_module.Settings.load().ping_interval_s == 120
+    assert delays == [None]  # rescheduled with the new interval
+    app._set_ping_interval(1)
+    assert app._settings.ping_interval_s == cache_module.MIN_PING_INTERVAL_S
+
+
+def test_viewer_server_checks_dialog(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
+    errors: list[str] = []
+    monkeypatch.setattr("tkinter.messagebox.showerror", lambda title, msg, **kw: errors.append(msg))
+    fake_service.responses.append(make_response([OBS_ROW]))
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+    last = app._menubar.index("end")
+    assert last is not None
+    settings_menu = next(
+        app._menubar.nametowidget(app._menubar.entrycget(i, "menu"))
+        for i in range(last + 1)
+        if app._menubar.entrycget(i, "label") == "Settings"
+    )
+    entries = [
+        settings_menu.entrycget(i, "label")
+        for i in range((settings_menu.index("end") or 0) + 1)
+        if settings_menu.type(i) == "command"
+    ]
+    assert entries == ["Cache…", "Empty the cache…", "Server checks…"]
+
+    app._ping_dialog()
+    dialog = app._dialog
+    assert dialog is not None
+    assert dialog.title() == "Server checks"
+    found = all_widgets(dialog)
+    spinbox = next(w for w in found if isinstance(w, ttk.Spinbox))
+    buttons = {w.cget("text"): w for w in found if isinstance(w, ttk.Button)}
+    assert spinbox.get() == "60"
+    assert {"Check now", "Cancel", "Save"} <= set(buttons)
+    buttons["Check now"].invoke()  # immediate check
+    assert app._ping_job is not None
+    spinbox.set("5")
+    buttons["Save"].invoke()
+    assert errors and "at least 10" in errors[0]
+    spinbox.set("300")
+    buttons["Save"].invoke()
+    assert not dialog.winfo_exists()
+    assert cache_module.Settings.load().ping_interval_s == 300
+
+
+def all_widgets(widget: tk.Misc) -> list[tk.Misc]:
+    children = widget.winfo_children()
+    return children + [w for child in children for w in all_widgets(child)]
+
+
+def test_pypi_url() -> None:
+    assert viewer.pypi_url("0.3.0") == "https://pypi.org/project/pyhfc/0.3.0/"
+    assert viewer.pypi_url("1.2.0rc1") == "https://pypi.org/project/pyhfc/1.2.0rc1/"
+    assert viewer.pypi_url("unknown") == "https://pypi.org/project/pyhfc/"
+
+
+def test_viewer_links(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch, opened: list[str]
+) -> None:
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
+    fake_service.responses.append(make_response([OBS_ROW]))
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+    # version of pyhfc, in the status bar: link to its PyPI page
+    assert app._version_link.cget("text") == f"pyhfc {__version__}"
+    assert app._version_link.url == viewer.pypi_url()
+    app._version_link.event_generate("<Button-1>")
+    # logo of the LIRA: link to its home page
+    app._logo_label.event_generate("<Button-1>")
+    assert opened == [viewer.pypi_url(), "https://lira.obspm.fr/"]
+
+
+def test_viewer_about(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch, opened: list[str]
+) -> None:
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
+    fake_service.responses.append(make_response([OBS_ROW]))
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+    app._about()
+    dialog = app._dialog
+    assert dialog is not None
+    assert dialog.title() == "About HFC Viewer"
+    labels = [w for w in all_widgets(dialog) if isinstance(w, ttk.Label)]
+    links = {str(w.cget("text")): w.url for w in labels if isinstance(w, viewer.Link)}
+    assert links == {
+        f"pyhfc {__version__}": viewer.pypi_url(),
+        "LIRA-Observatoire de Paris": "https://lira.obspm.fr/",
+        "http://voparis-helio.obspm.fr/hfc-gui/": "http://voparis-helio.obspm.fr/hfc-gui/",
+        "http://www.helio-vo.eu/": "http://www.helio-vo.eu/",
+        "helio.support@sympa.obspm.fr": "mailto:helio.support@sympa.obspm.fr",
+    }
+    texts = " ".join(str(w.cget("text")) for w in labels)
+    assert "xavier" not in texts.lower()
+    next(w for w in labels if w.cget("text") == "helio.support@sympa.obspm.fr").event_generate(
+        "<Button-1>"
+    )
+    assert opened == ["mailto:helio.support@sympa.obspm.fr"]

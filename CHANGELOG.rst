@@ -21,6 +21,14 @@ Unreleased
   responses with observations of the last 7 days expire after one hour
 * api: ``HQIClient`` accepts a response cache (``cache`` argument, ``use_cache`` to
   bypass it for a query)
+* hfcviewer: lights in the status bar telling whether the HQI service and the server
+  of the images are reachable, checked in the background every minute (interval set
+  in the *Settings* menu)
+* hfcviewer: links to the PyPI page of pyhfc (version in the status bar), to the LIRA
+  website (logo), and in the *About* window, with the new support address
+  helio.support@sympa.obspm.fr
+* api: ``HQIClient.ping()`` and ``pyhfc.api.quicklook.server_reachable()`` check that
+  the HQI and a server of images are reachable
 * hfcviewer: faster redraws, the quicklook image being processed once per observation
   and only the contours being redrawn when the features or their colors change
 

@@ -84,6 +84,13 @@ The features to display are given with ``-f`` (``ar``: active regions, ``ch``:
 coronal holes, ``sp``: sunspots, ``rs``: radio sources, ``pr``: prominences,
 ``fi``: filaments; ``-f ""`` for none).
 
+The status bar shows two lights telling whether the HQI service (observations
+and features) and the server of the quicklook images (FTP) are reachable (green)
+or not (red). They are checked every minute, in the background; the interval
+can be changed in the *Settings* menu (*Server checks*). The version of pyhfc, at
+the right of the status bar, is a link to its PyPI page, and the LIRA logo a link
+to the LIRA website.
+
 The quicklook images, and the data returned by the HQI (observations and
 features), are kept in a disk cache, so that they are displayed faster the next
 times (about 7 times faster for SDO/AIA images). The data of the last 7 days are

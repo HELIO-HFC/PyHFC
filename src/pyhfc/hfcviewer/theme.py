@@ -35,6 +35,9 @@ VIOLET_PALE = "#F4F0FF"
 TEAL = "#00A599"  # LIRA secondary accent
 GREY_LINE = "#E1DCF5"
 MUTED = "#5C5C66"  # secondary text (contrast with white >= 6:1)
+OK = "#1FA463"  # server reachable
+KO = "#E5484D"  # server not reachable
+UNKNOWN = "#A3A3AD"  # not checked yet
 
 #: Colors of the feature contours: saturated, to be visible on the dark
 #: and light parts of the solar images (contours also have a dark outline).
@@ -73,6 +76,8 @@ class Fonts:
     title: tuple[str, int, str]
     brand: tuple[str, int, str]
     mono: tuple[str, int]
+    link: tuple[str, int, str]
+    small_link: tuple[str, int, str]
 
 
 def _first_available(root: tk.Misc, families: tuple[str, ...]) -> str:
@@ -92,6 +97,8 @@ def make_fonts(root: tk.Misc) -> Fonts:
         title=(family, 18, "bold"),
         brand=(family, 15, "bold"),
         mono=(mono, 13),
+        link=(family, 13, "underline"),
+        small_link=(family, 11, "underline"),
     )
 
 
@@ -196,8 +203,65 @@ def apply_theme(root: tk.Misc) -> Fonts:
             foreground=[("active", VIOLET_DARKER)],
         )
 
+    # Hypertext links
+    style.configure("Link.TLabel", background=WHITE, foreground=VIOLET_DARK, font=fonts.link)
+    style.configure(
+        "StatusLink.TLabel", background=VIOLET_PALE, foreground=VIOLET_DARK, font=fonts.small_link
+    )
+    style.map("Link.TLabel", foreground=[("active", VIOLET_DARKER)], background=[("active", WHITE)])
+    style.map(
+        "StatusLink.TLabel",
+        foreground=[("active", VIOLET_DARKER)],
+        background=[("active", VIOLET_PALE)],
+    )
+    style.configure("Tooltip.TLabel", background=INK, foreground=WHITE, font=fonts.small)
+
     style.configure("TSeparator", background=GREY_LINE)
     return fonts
+
+
+class Tooltip:
+    """Small text displayed when the mouse is over a widget."""
+
+    def __init__(self, widget: tk.Misc, text: str = "", delay_ms: int = 400) -> None:
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self._job: str | None = None
+        self._window: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self.hide, add="+")
+        widget.bind("<ButtonPress>", self.hide, add="+")
+
+    def _schedule(self, event: object = None) -> None:
+        self._cancel()
+        self._job = self.widget.after(self.delay_ms, self.show)
+
+    def _cancel(self) -> None:
+        if self._job is not None:
+            self.widget.after_cancel(self._job)
+            self._job = None
+
+    def show(self) -> None:
+        self._job = None
+        if not self.text or self._window is not None:
+            return
+        window = tk.Toplevel(self.widget)
+        window.wm_overrideredirect(True)
+        label = ttk.Label(window, text=self.text, style="Tooltip.TLabel", padding=(8, 4))
+        label.pack()
+        window.update_idletasks()
+        # above the widget, kept on the screen
+        x = self.widget.winfo_rootx() + self.widget.winfo_width() - window.winfo_reqwidth()
+        y = self.widget.winfo_rooty() - window.winfo_reqheight() - 6
+        window.wm_geometry(f"+{max(0, x)}+{max(0, y)}")
+        self._window = window
+
+    def hide(self, event: object = None) -> None:
+        self._cancel()
+        if self._window is not None:
+            self._window.destroy()
+            self._window = None
 
 
 def load_logo(height: int, master: tk.Misc | None = None) -> ImageTk.PhotoImage | None:

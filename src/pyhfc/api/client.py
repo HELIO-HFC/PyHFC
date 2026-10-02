@@ -23,6 +23,8 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from importlib.resources import files
 from typing import Any, Protocol
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import suds
 import suds.client
@@ -188,6 +190,16 @@ class HQIClient:
             except (suds.transport.TransportError, OSError) as err:
                 raise HQIConnectionError(f"Can not reach {self.wsdl}: {err}") from err
         return self._soap_client
+
+    def ping(self, timeout: float = 10) -> bool:
+        """Return True if the web service is reachable (its WSDL can be read)."""
+        try:
+            with urlopen(self.wsdl, timeout=timeout) as response:
+                response.read(1)
+                return bool(response.status == 200)
+        except (URLError, OSError, ValueError) as err:
+            logger.debug("The web service %s is not reachable: %s", self.wsdl, err)
+            return False
 
     # ________________ Generic call __________________
 

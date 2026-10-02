@@ -10,7 +10,9 @@ import argparse
 import contextlib
 import logging
 import re
+import threading
 import tkinter as tk
+import webbrowser
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -26,11 +28,19 @@ from PIL import Image
 
 from pyhfc import __version__
 from pyhfc.api import HQI_DEV_WSDL, HQI_WSDL, HQIClient, HQIError, Row
-from pyhfc.api.quicklook import fetch_image, is_remote, open_image
+from pyhfc.api.quicklook import fetch_image, is_remote, open_image, server_reachable
 from pyhfc.api.sql import and_conditions, sql_equals, sql_where, to_datetime
 from pyhfc.api.tables import OBS_TABLE, PP_TABLE
 from pyhfc.hfcviewer import theme
-from pyhfc.hfcviewer.cache import HQI, IMAGES, MB, DiskCache, HQIResponseCache, Settings
+from pyhfc.hfcviewer.cache import (
+    HQI,
+    IMAGES,
+    MB,
+    MIN_PING_INTERVAL_S,
+    DiskCache,
+    HQIResponseCache,
+    Settings,
+)
 from pyhfc.improlib import auto_contrast, chain2image
 
 __author__ = "Xavier Bonnin"
@@ -62,6 +72,29 @@ FEATURE_TIME_WINDOW = timedelta(hours=1)
 
 # Height of the logo in the header, in pixels
 LOGO_HEIGHT = 64
+
+# Web pages
+LIRA_URL = "https://lira.obspm.fr/"
+HFC_URL = "http://voparis-helio.obspm.fr/hfc-gui/"
+HELIO_URL = "http://www.helio-vo.eu/"
+SUPPORT_EMAIL = "helio.support@sympa.obspm.fr"
+
+
+def pypi_url(version: str = __version__) -> str:
+    """Url of the PyPI page of pyhfc, for a version (the project page if it is unknown)."""
+    base = "https://pypi.org/project/pyhfc/"
+    return f"{base}{version}/" if re.fullmatch(r"\d+(\.\d+)*\w*", version) else base
+
+
+# Server of the quicklook images checked when no observation is displayed
+DEFAULT_IMAGE_SERVER = "ftp://ftpbass2000.obspm.fr/"
+# Timeout of the server checks, in seconds
+PING_TIMEOUT = 10
+
+
+def check_servers(hqi: HQIClient, image_url: str) -> tuple[bool, bool]:
+    """Check that the HQI and the server of the quicklook images are reachable."""
+    return hqi.ping(timeout=PING_TIMEOUT), server_reachable(image_url, timeout=PING_TIMEOUT)
 
 
 @dataclass(frozen=True)
@@ -394,6 +427,13 @@ class Viewer(tk.Frame):
         self._feat_artists: list[Any] = []
         self._date_text: Any = None
         self._dialog: tk.Toplevel | None = None
+        # Reachability of the servers (None: not checked yet), checked in a thread
+        self._servers: dict[str, bool | None] = {"hqi": None, "ftp": None}
+        self._servers_checked_at: datetime | None = None
+        self._ping_thread: threading.Thread | None = None
+        self._ping_result: tuple[bool, bool] | None = None
+        self._ping_job: str | None = None
+        self.bind("<Destroy>", self._on_destroy, add="+")
         self._xlim: tuple[float, float] = (0.0, 0.0)
         self._ylim: tuple[float, float] = (0.0, 0.0)
 
@@ -407,6 +447,8 @@ class Viewer(tk.Frame):
             self._set_date()
         else:
             self._latest_date()
+        # then check the servers regularly
+        self._schedule_ping(0)
 
     @property
     def dataset(self) -> DataSet:
@@ -432,6 +474,8 @@ class Viewer(tk.Frame):
         settingsmenu = tk.Menu(self._menubar, tearoff=0)
         settingsmenu.add_command(label="Cache…", command=self._cache_dialog)
         settingsmenu.add_command(label="Empty the cache…", command=self._empty_cache)
+        settingsmenu.add_separator()
+        settingsmenu.add_command(label="Server checks…", command=self._ping_dialog)
         self._menubar.add_cascade(label="Settings", menu=settingsmenu)
 
         helpmenu = tk.Menu(self._menubar, tearoff=0)
@@ -457,7 +501,12 @@ class Viewer(tk.Frame):
         # logo of the LIRA (or a violet "HFC" block if it is not available)
         self._logo = theme.load_logo(LOGO_HEIGHT, master=self.master)
         if self._logo is not None:
-            ttk.Label(header, image=self._logo, style="Brand.TLabel", padding=0).pack(side=tk.LEFT)
+            self._logo_label = ttk.Label(
+                header, image=self._logo, style="Brand.TLabel", padding=0, cursor="hand2"
+            )
+            self._logo_label.pack(side=tk.LEFT)
+            self._logo_label.bind("<Button-1>", lambda event: open_url(LIRA_URL))
+            theme.Tooltip(self._logo_label, LIRA_URL)
         else:
             ttk.Label(header, text="HFC", style="Brand.TLabel", padding=(18, 12)).pack(
                 side=tk.LEFT, fill=tk.Y
@@ -494,7 +543,29 @@ class Viewer(tk.Frame):
         bar = ttk.Frame(self, style="Status.TFrame", padding=(16, 6))
         bar.pack(side=tk.BOTTOM, fill=tk.X)
         ttk.Label(bar, textvariable=self._status, style="Status.TLabel").pack(side=tk.LEFT)
-        ttk.Label(bar, text=f"pyhfc {__version__}", style="Status.TLabel").pack(side=tk.RIGHT)
+        self._version_link = link(
+            bar, f"pyhfc {__version__}", pypi_url(), style="StatusLink.TLabel"
+        )
+        self._version_link.pack(side=tk.RIGHT)
+        ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.RIGHT, fill=tk.Y, padx=12)
+        # "diodes" telling if the servers are reachable
+        self._diodes: dict[str, tuple[tk.Canvas, int, theme.Tooltip]] = {}
+        for key, text in (("ftp", "FTP"), ("hqi", "HQI")):
+            box = ttk.Frame(bar, style="Status.TFrame")
+            box.pack(side=tk.RIGHT, padx=(10, 0))
+            diode = tk.Canvas(
+                box, width=12, height=12, background=theme.VIOLET_PALE, highlightthickness=0
+            )
+            item = diode.create_oval(1, 1, 11, 11, fill=theme.UNKNOWN, outline=theme.MUTED)
+            diode.pack(side=tk.LEFT, padx=(0, 4))
+            label = ttk.Label(box, text=text, style="Status.TLabel")
+            label.pack(side=tk.LEFT)
+            tooltip = theme.Tooltip(box, "")
+            for widget in (diode, label):
+                widget.bind("<Enter>", tooltip._schedule, add="+")
+                widget.bind("<Leave>", tooltip.hide, add="+")
+            self._diodes[key] = (diode, item, tooltip)
+        self._update_diodes()
 
     def _section(self, parent: tk.Misc, text: str, top: int = 0) -> None:
         ttk.Label(parent, text=text, style="Section.TLabel").pack(anchor=tk.W, pady=(top, 2))
@@ -955,24 +1026,178 @@ class Viewer(tk.Frame):
         messagebox.showinfo("HFC Viewer help", msg)
 
     def _about(self) -> None:
-        msg = (
-            f"HFC Viewer {__version__}\n"
-            "\n"
-            "HFC Viewer for Python is developed and\n"
-            "maintained by LIRA-Observatoire de Paris.\n"
-            "\n"
-            "More information about available data\n"
-            "can be found on the HFC web page:\n"
-            "http://voparis-helio.obspm.fr/hfc-gui/\n"
-            "\n"
-            "The Heliophysics Feature Catalogue (HFC)\n"
-            "is a service of the HELIO virtual observatory:\n"
-            "http://www.helio-vo.eu/\n"
-            "\n"
-            "Any feedback is welcome, please send your "
-            "comments to xavier dot bonnin at obspm dot fr."
+        """Window giving the version, the web pages and the contact of the viewer."""
+        dialog = tk.Toplevel(self.master, background=theme.WHITE)
+        dialog.title("About HFC Viewer")
+        dialog.transient(self.master)
+        dialog.resizable(False, False)
+        frame = ttk.Frame(dialog, padding=24)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        def text(value: str) -> None:
+            ttk.Label(frame, text=value, justify=tk.LEFT).pack(anchor=tk.W)
+
+        ttk.Label(frame, text="HFC Viewer", font=self._fonts.title).pack(anchor=tk.W)
+        link(frame, f"pyhfc {__version__}", pypi_url()).pack(anchor=tk.W, pady=(0, 12))
+        text("HFC Viewer for Python is developed and maintained by")
+        link(frame, "LIRA-Observatoire de Paris", LIRA_URL).pack(anchor=tk.W, pady=(0, 12))
+        text("More information about the available data can be found on the HFC web page:")
+        link(frame, HFC_URL, HFC_URL).pack(anchor=tk.W, pady=(0, 12))
+        text("The Heliophysics Feature Catalogue (HFC) is a service of the HELIO")
+        text("virtual observatory:")
+        link(frame, HELIO_URL, HELIO_URL).pack(anchor=tk.W, pady=(0, 12))
+        text("Any feedback is welcome, please send your comments to:")
+        link(frame, SUPPORT_EMAIL, f"mailto:{SUPPORT_EMAIL}").pack(anchor=tk.W)
+        ttk.Button(frame, text="Close", command=dialog.destroy).pack(anchor=tk.E, pady=(16, 0))
+        self._dialog = dialog
+
+    # ________________ Server checks _________________
+
+    def _image_server(self) -> str:
+        """Url of the server of the quicklook images (of the displayed observation)."""
+        if self.obs_data is not None and is_remote(str(self.obs_data.get("QCLK_URL", ""))):
+            return str(self.obs_data["QCLK_URL"])
+        return DEFAULT_IMAGE_SERVER
+
+    def _schedule_ping(self, delay_ms: int | None = None) -> None:
+        """Schedule the next check of the servers (default: after the interval setting)."""
+        if self._ping_job is not None:
+            self.after_cancel(self._ping_job)
+        if delay_ms is None:
+            delay_ms = self._settings.ping_interval_s * 1000
+        self._ping_job = self.after(delay_ms, self._start_ping)
+
+    def _start_ping(self) -> None:
+        """Check the servers in a thread, not to freeze the viewer."""
+        self._ping_job = None
+        if self._ping_thread is not None and self._ping_thread.is_alive():
+            return
+        hqi, image_server = self._hqi, self._image_server()
+
+        def run() -> None:
+            self._ping_result = check_servers(hqi, image_server)
+
+        self._ping_result = None
+        self._ping_thread = threading.Thread(target=run, name="hfcviewer-ping", daemon=True)
+        self._ping_thread.start()
+        self.after(100, self._poll_ping)
+
+    def _poll_ping(self) -> None:
+        """Wait (without blocking) for the result of the check, then show it."""
+        if self._ping_thread is not None and self._ping_thread.is_alive():
+            self.after(100, self._poll_ping)
+            return
+        if self._ping_result is not None:
+            self._apply_ping(*self._ping_result)
+        self._schedule_ping()
+
+    def _apply_ping(self, hqi_ok: bool, ftp_ok: bool) -> None:
+        changed = self._servers != {"hqi": hqi_ok, "ftp": ftp_ok}
+        self._servers = {"hqi": hqi_ok, "ftp": ftp_ok}
+        self._servers_checked_at = datetime.now()
+        if changed:
+            logger.info("Servers reachable: HQI=%s, images=%s", hqi_ok, ftp_ok)
+        self._update_diodes()
+
+    def _update_diodes(self) -> None:
+        names = {"hqi": "HQI service (observations and features)", "ftp": "Images server"}
+        checked = (
+            f" (checked at {self._servers_checked_at:%H:%M:%S})" if self._servers_checked_at else ""
         )
-        messagebox.showinfo("HFC Viewer", msg)
+        for key, (diode, item, tooltip) in self._diodes.items():
+            state = self._servers[key]
+            color = theme.UNKNOWN if state is None else theme.OK if state else theme.KO
+            diode.itemconfigure(item, fill=color)
+            status = (
+                "not checked yet" if state is None else "reachable" if state else "NOT reachable"
+            )
+            tooltip.text = f"{names[key]}: {status}{checked}"
+
+    def _on_destroy(self, event: tk.Event[tk.Misc]) -> None:
+        if event.widget is self and self._ping_job is not None:
+            self.after_cancel(self._ping_job)
+            self._ping_job = None
+
+    def _set_ping_interval(self, seconds: int) -> None:
+        """Change the interval between two checks of the servers, and save it."""
+        self._settings.ping_interval_s = max(MIN_PING_INTERVAL_S, seconds)
+        self._settings.save()
+        self._schedule_ping()
+
+    def _ping_dialog(self) -> None:
+        """Window to change the interval between two checks of the servers."""
+        dialog = tk.Toplevel(self.master, background=theme.WHITE)
+        dialog.title("Server checks")
+        dialog.transient(self.master)
+        dialog.resizable(False, False)
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="Server checks", font=self._fonts.title).grid(
+            row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 10)
+        )
+        ttk.Label(
+            frame,
+            text="The viewer checks regularly that the HQI service and the server\n"
+            "of the images are reachable (green or red lights in the status bar).",
+            justify=tk.LEFT,
+        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(0, 10))
+        interval = tk.StringVar(value=str(self._settings.ping_interval_s))
+        box = ttk.Frame(frame)
+        box.grid(row=2, column=0, columnspan=2, sticky=tk.W)
+        ttk.Label(box, text="Check every", style="Field.TLabel").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Spinbox(
+            box, from_=MIN_PING_INTERVAL_S, to=86_400, increment=10, textvariable=interval, width=8
+        ).pack(side=tk.LEFT)
+        ttk.Label(box, text="seconds").pack(side=tk.LEFT, padx=(6, 0))
+
+        def check_now() -> None:
+            self._schedule_ping(0)
+
+        def save() -> None:
+            try:
+                seconds = int(interval.get())
+                if seconds < MIN_PING_INTERVAL_S:
+                    raise ValueError(seconds)
+            except ValueError:
+                messagebox.showerror(
+                    "Server checks",
+                    f"The interval must be a number of seconds, at least {MIN_PING_INTERVAL_S}.",
+                    parent=dialog,
+                )
+                return
+            self._set_ping_interval(seconds)
+            dialog.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=(16, 0))
+        ttk.Button(buttons, text="Check now", style="Secondary.TButton", command=check_now).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(buttons, text="Save", command=save).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Cancel", style="Secondary.TButton", command=dialog.destroy).pack(
+            side=tk.RIGHT, padx=(0, 10)
+        )
+        self._dialog = dialog
+
+
+def open_url(url: str) -> None:
+    """Open an url (web page, e-mail address) with the default application."""
+    logger.info("Opening %s", url)
+    webbrowser.open(url)
+
+
+class Link(ttk.Label):
+    """Label opening an url when clicked (hypertext link)."""
+
+    def __init__(self, parent: tk.Misc, text: str, url: str, style: str = "Link.TLabel") -> None:
+        super().__init__(parent, text=text, style=style, cursor="hand2")
+        self.url = url
+        self.bind("<Button-1>", lambda event: open_url(self.url))
+
+
+def link(parent: tk.Misc, text: str, url: str, style: str = "Link.TLabel") -> Link:
+    """Return a label opening an url when clicked (hypertext link)."""
+    return Link(parent, text, url, style)
 
 
 # ________________ Main __________________________

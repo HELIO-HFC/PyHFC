@@ -46,7 +46,7 @@ def test_settings(tmp_path: Path) -> None:
     path = tmp_path / "settings" / "hfcviewer.json"
     assert Settings.load(path) == Settings(cache_max_size_mb=500)  # default
     Settings(cache_max_size_mb=250).save(path)
-    assert json.loads(path.read_text()) == {"cache_max_size_mb": 250}
+    assert json.loads(path.read_text()) == {"cache_max_size_mb": 250, "ping_interval_s": 60}
     assert Settings.load(path).cache_max_size_mb == 250
 
 
@@ -177,3 +177,18 @@ def test_hqi_response_cache_invalid_file(tmp_path: Path) -> None:
     responses = HQIResponseCache(disk_cache)
     assert responses.get("bad") is None
     assert disk_cache.count(HQI) == 0
+
+
+def test_settings_partial_and_invalid_values(tmp_path: Path) -> None:
+    path = tmp_path / "hfcviewer.json"
+    # settings file of a previous version (no ping interval)
+    path.write_text('{"cache_max_size_mb": 300}')
+    assert Settings.load(path) == Settings(cache_max_size_mb=300, ping_interval_s=60)
+    # an invalid value does not discard the other settings
+    path.write_text('{"cache_max_size_mb": 300, "ping_interval_s": "often"}')
+    assert Settings.load(path) == Settings(cache_max_size_mb=300, ping_interval_s=60)
+    # minimum interval
+    path.write_text('{"ping_interval_s": 1}')
+    assert Settings.load(path).ping_interval_s == cache.MIN_PING_INTERVAL_S
+    path.write_text("[1, 2]")
+    assert Settings.load(path) == Settings()

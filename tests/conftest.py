@@ -117,6 +117,12 @@ def isolated_user_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PYHFC_CONFIG_DIR", str(tmp_path / "config"))
 
 
+@pytest.fixture(autouse=True)
+def offline_server_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The regular checks of the servers by the viewer do not reach the network in the tests."""
+    monkeypatch.setattr("pyhfc.hfcviewer.viewer.check_servers", lambda hqi, image_url: (True, True))
+
+
 @pytest.fixture
 def fake_service(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeService]:
     """Replace the SOAP client of every HQIClient by a fake service."""

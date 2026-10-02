@@ -3,17 +3,26 @@
 
 from __future__ import annotations
 
+import ftplib
 import io
 import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 from PIL import Image
 
-__all__ = ["fetch_image", "is_remote", "load_image", "open_image", "quicklook_url"]
+__all__ = [
+    "fetch_image",
+    "is_remote",
+    "load_image",
+    "open_image",
+    "quicklook_url",
+    "server_reachable",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -70,3 +79,34 @@ def load_image(file: str | Path, timeout: float = 30) -> Image.Image | None:
     if data is None:
         return None
     return open_image(data, str(file))
+
+
+def server_reachable(url: str, timeout: float = 10) -> bool:
+    """Return True if the server of an url (ftp, http or https) is reachable.
+
+    For ftp, the server must answer a connection with its welcome message (no
+    login nor transfer); for http(s), it must answer a HEAD request (whatever
+    the status).
+    """
+    parts = urlsplit(url)
+    host = parts.hostname
+    if not host:
+        return False
+    try:
+        if parts.scheme == "ftp":
+            ftp = ftplib.FTP(timeout=timeout)
+            try:
+                welcome = ftp.connect(host, parts.port or 21)
+            finally:
+                ftp.close()
+            return welcome.startswith("2")
+        if parts.scheme in ("http", "https"):
+            request = Request(f"{parts.scheme}://{parts.netloc}/", method="HEAD")
+            with urlopen(request, timeout=timeout):
+                return True
+    except HTTPError:
+        return True  # the server answered
+    except (URLError, OSError, EOFError, ftplib.Error) as err:
+        logger.debug("The server of %s is not reachable: %s", url, err)
+        return False
+    return False

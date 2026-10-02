@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from email.message import Message
 from pathlib import Path
-from urllib.error import URLError
+from typing import ClassVar
+from urllib.error import HTTPError, URLError
 
 import pytest
 import suds
@@ -394,3 +396,91 @@ def test_response_max_age() -> None:
     )
     tables = parse_response(make_response([{"TABLE_NAMES": "VIEW_AR_HQI"}]))
     assert response_max_age(tables, now) == UNDATED_MAX_AGE
+
+
+# ________________ Server checks _________________
+
+
+class FakeHTTPResponse:
+    def __init__(self, status: int = 200) -> None:
+        self.status = status
+
+    def __enter__(self) -> FakeHTTPResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        pass
+
+    def read(self, size: int = -1) -> bytes:
+        return b"<"
+
+
+def test_ping(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls: list[str] = []
+
+    def ok(url: str, timeout: float) -> FakeHTTPResponse:
+        urls.append(url)
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr("pyhfc.api.client.urlopen", ok)
+    assert HQIClient("http://example.org/wsdl").ping(timeout=3)
+    assert urls == ["http://example.org/wsdl"]
+
+    def down(url: str, timeout: float) -> None:
+        raise URLError("unreachable")
+
+    monkeypatch.setattr("pyhfc.api.client.urlopen", down)
+    assert not HQIClient().ping()
+
+
+class FakeFTP:
+    welcome: ClassVar[str] = "220 Welcome"
+    error: ClassVar[Exception | None] = None
+    connections: ClassVar[list[tuple[str, int]]] = []
+
+    def __init__(self, timeout: float) -> None:
+        self.timeout = timeout
+
+    def connect(self, host: str, port: int) -> str:
+        if FakeFTP.error is not None:
+            raise FakeFTP.error
+        FakeFTP.connections.append((host, port))
+        return FakeFTP.welcome
+
+    def close(self) -> None:
+        pass
+
+
+def test_server_reachable_ftp(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("pyhfc.api.quicklook.ftplib.FTP", FakeFTP)
+    FakeFTP.connections = []
+    FakeFTP.error = None
+    assert quicklook_module.server_reachable("ftp://ftp.example.org/pub/image.png")
+    assert quicklook_module.server_reachable("ftp://ftp.example.org:2121/")
+    assert FakeFTP.connections == [("ftp.example.org", 21), ("ftp.example.org", 2121)]
+    FakeFTP.error = OSError("timed out")
+    assert not quicklook_module.server_reachable("ftp://ftp.example.org/")
+    FakeFTP.error = None
+
+
+def test_server_reachable_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[tuple[str, str | None]] = []
+
+    def head(request: object, timeout: float) -> FakeHTTPResponse:
+        requests.append((request.full_url, request.get_method()))  # type: ignore[attr-defined]
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr("pyhfc.api.quicklook.urlopen", head)
+    assert quicklook_module.server_reachable("https://example.org/a/b.png")
+    assert requests == [("https://example.org/", "HEAD")]
+
+    def not_found(request: object, timeout: float) -> None:
+        raise HTTPError("https://example.org/", 404, "Not found", Message(), None)
+
+    monkeypatch.setattr("pyhfc.api.quicklook.urlopen", not_found)
+    assert quicklook_module.server_reachable("https://example.org/")  # the server answered
+
+
+@pytest.mark.parametrize("url", ["nothing", "file:///tmp/image.png", "ftp:///no-host"])
+def test_server_reachable_invalid_url(url: str) -> None:
+    assert not quicklook_module.server_reachable(url)

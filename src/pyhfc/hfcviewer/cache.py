@@ -29,6 +29,9 @@ APP_NAME = "pyhfc"
 MB = 1_000_000
 #: Default maximum size of the cache, in MB
 DEFAULT_MAX_SIZE_MB = 500
+#: Default interval between two checks of the servers, and its minimum, in seconds
+DEFAULT_PING_INTERVAL_S = 60
+MIN_PING_INTERVAL_S = 10
 
 
 def user_cache_dir() -> Path:
@@ -63,6 +66,8 @@ class Settings:
     """Settings of the HFC viewer, saved in a JSON file."""
 
     cache_max_size_mb: int = DEFAULT_MAX_SIZE_MB
+    #: Interval between two checks of the servers (HQI, images), in seconds
+    ping_interval_s: int = DEFAULT_PING_INTERVAL_S
 
     @staticmethod
     def default_path() -> Path:
@@ -70,16 +75,26 @@ class Settings:
 
     @classmethod
     def load(cls, path: Path | None = None) -> Settings:
-        """Load the settings (default values if the file is missing or invalid)."""
+        """Load the settings (default values if the file, or a setting, is missing or invalid)."""
         path = path or cls.default_path()
         try:
             data = json.loads(path.read_text())
-            return cls(cache_max_size_mb=max(0, int(data["cache_max_size_mb"])))
+            if not isinstance(data, dict):
+                raise TypeError("not a JSON object")
         except FileNotFoundError:
             return cls()
-        except (OSError, ValueError, TypeError, KeyError) as err:
+        except (OSError, ValueError, TypeError) as err:
             logger.warning("Invalid settings file %s (%s): default settings used", path, err)
             return cls()
+        settings = cls()
+        for name, minimum in (("cache_max_size_mb", 0), ("ping_interval_s", MIN_PING_INTERVAL_S)):
+            if name not in data:
+                continue
+            try:
+                setattr(settings, name, max(minimum, int(data[name])))
+            except (ValueError, TypeError):
+                logger.warning("Invalid setting %s=%r: default value used", name, data[name])
+        return settings
 
     def save(self, path: Path | None = None) -> None:
         path = path or self.default_path()
