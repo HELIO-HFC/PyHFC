@@ -1,6 +1,6 @@
 [project]
 name = "pyhfc"
-version = "0.3.0"
+version = "0.4.0"
 description = "Python tools for the HELIO Heliophysics Feature Catalogue (HFC): HQI client and viewer"
 readme = "README.rst"
 license = "EUPL-1.2"
@@ -69,6 +69,9 @@ select = [
     "PTH", # flake8-use-pathlib
     "RUF", # ruff-specific rules
 ]
+
+# Characters used on purpose in the viewer (H-alpha line, navigation arrows)
+allowed-confusables = ["α", "‹", "›"]
 
 [tool.ruff.lint.pep8-naming]
 # SQL clause keywords (WHAT, FROM, WHERE, ...) are the web service parameter names.

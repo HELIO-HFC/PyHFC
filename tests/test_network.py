@@ -91,3 +91,10 @@ def test_viewer_features() -> None:
     rows = viewer.closest_rows(response.rows, DATE)
     assert rows
     assert any(viewer.feature_contour(row) is not None for row in rows)
+
+
+def test_servers_reachable(hqi: HQIClient) -> None:
+    from pyhfc.api.quicklook import server_reachable
+
+    assert hqi.ping()
+    assert server_reachable(viewer.DEFAULT_IMAGE_SERVER)
