@@ -1076,3 +1076,26 @@ def test_viewer_time_ranges_colors(
     assert app._feat_ct.get() == 1
     cache_module.Settings().save()
     assert viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])._feat_ct.get() == 0
+
+
+def test_viewer_help_menu(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch, opened: list[str]
+) -> None:
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
+    fake_service.responses.append(make_response([OBS_ROW]))
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+    last = app._menubar.index("end")
+    assert last is not None
+    help_menu = next(
+        app._menubar.nametowidget(app._menubar.entrycget(i, "menu"))
+        for i in range(last + 1)
+        if app._menubar.entrycget(i, "label") == "Help"
+    )
+    entries = {
+        help_menu.entrycget(i, "label"): i
+        for i in range((help_menu.index("end") or 0) + 1)
+        if help_menu.type(i) == "command"
+    }
+    assert list(entries) == ["Help", "HFC database content…", "About HFC Viewer"]
+    help_menu.invoke(entries["HFC database content…"])
+    assert opened == ["https://voparis-helio.obspm.fr/hfc-gui/db_content.php"]

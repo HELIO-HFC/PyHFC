@@ -97,7 +97,8 @@ and features) and the server of the quicklook images (FTP) are reachable (green)
 or not (red). They are checked every minute, in the background; the interval
 can be changed in the *Settings* menu (*Server checks*). The version of pyhfc, at
 the right of the status bar, is a link to its PyPI page, and the LIRA logo a link
-to the LIRA website.
+to the LIRA website. *Help > HFC database content* opens the web page giving the
+content of the HFC database (observations and features available).
 
 The quicklook images, and the data returned by the HQI (observations and
 features), are kept in a disk cache, so that they are displayed faster the next

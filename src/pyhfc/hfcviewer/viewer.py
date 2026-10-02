@@ -76,6 +76,8 @@ LOGO_HEIGHT = 64
 # Web pages
 LIRA_URL = "https://lira.obspm.fr/"
 HFC_URL = "http://voparis-helio.obspm.fr/hfc-gui/"
+#: Content of the HFC database (observations and features available)
+HFC_DB_CONTENT_URL = "https://voparis-helio.obspm.fr/hfc-gui/db_content.php"
 HELIO_URL = "http://www.helio-vo.eu/"
 SUPPORT_EMAIL = "helio.support@sympa.obspm.fr"
 
@@ -514,6 +516,10 @@ class Viewer(tk.Frame):
 
         helpmenu = tk.Menu(self._menubar, tearoff=0)
         helpmenu.add_command(label="Help", command=self._show_help)
+        helpmenu.add_command(
+            label="HFC database content…", command=lambda: open_url(HFC_DB_CONTENT_URL)
+        )
+        helpmenu.add_separator()
         helpmenu.add_command(label="About HFC Viewer", command=self._about)
         self._menubar.add_cascade(label="Help", menu=helpmenu)
 
