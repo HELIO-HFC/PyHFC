@@ -1,4 +1,4 @@
-# GitLab CI pipeline of hfcpy.
+# GitLab CI pipeline of pyhfc.
 #
 # Pipelines only run when they are triggered:
 #   - from the GitLab web interface (Build > Pipelines > Run pipeline),
@@ -115,7 +115,7 @@ publish-pypi:
       aud: pypi
   environment:
     name: pypi
-    url: https://pypi.org/project/hfcpy/
+    url: https://pypi.org/project/pyhfc/
   script:
     - sh ci/check-release.sh "$CI_COMMIT_TAG" "$CI_COMMIT_SHA"
     - uv publish --trusted-publishing always --check-url https://pypi.org/simple/ dist/*

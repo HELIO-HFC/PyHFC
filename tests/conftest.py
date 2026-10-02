@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: EUPL-1.2
-"""Shared fixtures for the hfcpy tests."""
+"""Shared fixtures for the pyhfc tests."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from xml.sax.saxutils import escape, quoteattr
 
 import pytest
 
-from hfcpy.api.client import HQIClient
+from pyhfc.api.client import HQIClient
 
 #: Field description: (name, datatype) or (name, datatype, null value)
 FieldSpec = tuple[str, str] | tuple[str, str, str]

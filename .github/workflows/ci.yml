@@ -1,4 +1,4 @@
-# GitHub Actions CI of hfcpy (equivalent to .gitlab-ci.yml).
+# GitHub Actions CI of pyhfc (equivalent to .gitlab-ci.yml).
 #
 # Workflows only run when they are triggered:
 #   - from the GitHub web interface (Actions > CI > Run workflow),
@@ -157,7 +157,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/project/hfcpy/
+      url: https://pypi.org/project/pyhfc/
     permissions:
       contents: read
       id-token: write

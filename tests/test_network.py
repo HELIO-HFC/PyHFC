@@ -7,8 +7,8 @@ from datetime import datetime
 
 import pytest
 
-from hfcpy.api import HQIClient, HQIQueryError, load_image
-from hfcpy.hfcviewer import viewer
+from pyhfc.api import HQIClient, HQIQueryError, load_image
+from pyhfc.hfcviewer import viewer
 
 pytestmark = pytest.mark.network
 

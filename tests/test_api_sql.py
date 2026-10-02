@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from hfcpy.api import sql
+from pyhfc.api import sql
 
 DATE = datetime(2012, 6, 1, 12, 0, 0)
 

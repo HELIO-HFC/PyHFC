@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hfcpy.improlib import (
+from pyhfc.improlib import (
     auto_contrast,
     chain2image,
     closerec,

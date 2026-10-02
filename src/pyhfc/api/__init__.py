@@ -4,7 +4,7 @@
 This sub-package does not depend on the viewer (Tkinter, matplotlib): it can
 be used on its own to query the HFC::
 
-    from hfcpy.api import HQIClient
+    from pyhfc.api import HQIClient
 
     hqi = HQIClient()
     print(hqi.tables())
@@ -13,7 +13,7 @@ be used on its own to query the HFC::
         print(row["DATE_OBS"], row["FEAT_X_ARCSEC"], row["FEAT_Y_ARCSEC"])
 """
 
-from hfcpy.api.client import (
+from pyhfc.api.client import (
     HQI_DEV_WSDL,
     HQI_WSDL,
     HQIClient,
@@ -21,10 +21,10 @@ from hfcpy.api.client import (
     HQIError,
     HQIQueryError,
 )
-from hfcpy.api.quicklook import load_image, quicklook_url
-from hfcpy.api.sql import hqi_where, sql_where
-from hfcpy.api.tables import FEATURE_TABLES, feature_table
-from hfcpy.api.votable import Field, QueryResponse, Row, Table, parse_response
+from pyhfc.api.quicklook import load_image, quicklook_url
+from pyhfc.api.sql import hqi_where, sql_where
+from pyhfc.api.tables import FEATURE_TABLES, feature_table
+from pyhfc.api.votable import Field, QueryResponse, Row, Table, parse_response
 
 __all__ = [
     "FEATURE_TABLES",

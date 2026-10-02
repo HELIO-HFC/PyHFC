@@ -1,34 +1,34 @@
-HFCPy
+PyHFC
 -----
 
-.. image:: https://github.com/HELIO-HFC/HFCPy/actions/workflows/ci.yml/badge.svg?branch=develop
-   :target: https://github.com/HELIO-HFC/HFCPy/actions/workflows/ci.yml?query=branch%3Adevelop
+.. image:: https://github.com/HELIO-HFC/PyHFC/actions/workflows/ci.yml/badge.svg?branch=develop
+   :target: https://github.com/HELIO-HFC/PyHFC/actions/workflows/ci.yml?query=branch%3Adevelop
    :alt: CI status
 
-.. image:: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/HELIO-HFC/HFCPy/badges/coverage.json
-   :target: https://github.com/HELIO-HFC/HFCPy/actions/workflows/ci.yml?query=branch%3Adevelop
+.. image:: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/HELIO-HFC/PyHFC/badges/coverage.json
+   :target: https://github.com/HELIO-HFC/PyHFC/actions/workflows/ci.yml?query=branch%3Adevelop
    :alt: Coverage
 
 .. image:: https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue
    :alt: Python versions
 
-.. image:: https://img.shields.io/github/license/HELIO-HFC/HFCPy
-   :target: https://github.com/HELIO-HFC/HFCPy/blob/develop/LICENSE
+.. image:: https://img.shields.io/github/license/HELIO-HFC/PyHFC
+   :target: https://github.com/HELIO-HFC/PyHFC/blob/develop/LICENSE
    :alt: License
 
-``hfcpy`` is a Python package for the users of the HELIO Heliophysics Feature
+``pyhfc`` is a Python package for the users of the HELIO Heliophysics Feature
 Catalogue (HFC). It provides:
 
-- ``hfcpy.api``, a Python client of the HELIO Query Interface (HQI) of the HFC,
+- ``pyhfc.api``, a Python client of the HELIO Query Interface (HQI) of the HFC,
   usable on its own to query the catalogue;
-- ``hfcpy.hfcviewer``, a graphical viewer of the HFC observations and features,
+- ``pyhfc.hfcviewer``, a graphical viewer of the HFC observations and features,
   run with the ``hfcviewer`` command;
-- ``hfcpy.improlib``, image processing routines (e.g. to decode the chain codes
+- ``pyhfc.improlib``, image processing routines (e.g. to decode the chain codes
   of the feature contours).
 
 Visit http://voparis-helio.obspm.fr/hfc-gui/ for more information about the HFC.
 
-HFCPy requires Python 3.12, 3.13 or 3.14 (with Tkinter for the viewer).
+PyHFC requires Python 3.12, 3.13 or 3.14 (with Tkinter for the viewer).
 
 
 INSTALLATION
@@ -43,15 +43,15 @@ To install the ``hfcviewer`` command, run::
 To use the HQI client in your own project, add it as a dependency, optionally
 with the ``pandas`` and/or ``astropy`` extras::
 
-    uv add "hfcpy[pandas,astropy]"
+    uv add "pyhfc[pandas,astropy]"
 
 or, with pip::
 
-    pip install "hfcpy[pandas,astropy]"
+    pip install "pyhfc[pandas,astropy]"
 
 To use the development version, install it from the ``develop`` branch::
 
-    uv add "hfcpy @ git+https://github.com/HELIO-HFC/HFCPy.git@develop"
+    uv add "pyhfc @ git+https://github.com/HELIO-HFC/PyHFC.git@develop"
 
 To set up a development environment, run::
 
@@ -67,7 +67,7 @@ To run the hfcViewer, enter::
 
 or, equivalently::
 
-    uv run python -m hfcpy.hfcviewer
+    uv run python -m pyhfc.hfcviewer
 
 For instance, to display the Meudon H-alpha observation nearest to a date::
 
@@ -86,7 +86,7 @@ HQI CLIENT
 ==========
 
 The HFC is queried through the HELIO Query Interface (HQI), a SOAP web service
-returning VOTables. ``hfcpy.api.HQIClient`` wraps all its methods:
+returning VOTables. ``pyhfc.api.HQIClient`` wraps all its methods:
 
 =====================================  ====================  ================================================
 Client method                          HQI method            Description
@@ -169,7 +169,7 @@ Examples
 
 List the tables of the HFC and the fields of a table::
 
-    from hfcpy.api import HQIClient
+    from pyhfc.api import HQIClient
 
     hqi = HQIClient()
     print(hqi.tables())
@@ -263,7 +263,7 @@ Save the VOTable, or convert it to a dictionary or to an astropy Table::
 
 Handle the errors::
 
-    from hfcpy.api import HQIError
+    from pyhfc.api import HQIError
 
     try:
         hqi.select("VIEW_AR_HQI", where="NO_SUCH_FIELD = 1")
@@ -312,7 +312,7 @@ RELEASES
 ========
 
 The development is done on ``develop``; the ``master`` branch only receives the
-releases. To publish a new version of ``hfcpy`` on `PyPI <https://pypi.org/project/hfcpy/>`_:
+releases. To publish a new version of ``pyhfc`` on `PyPI <https://pypi.org/project/pyhfc/>`_:
 
 1. update the version (e.g. ``uv version --bump minor``) and the ``CHANGELOG.rst``
    on ``develop``;
@@ -333,11 +333,12 @@ The publication uses the `trusted publishing
 CI, PyPI trusts the CI pipelines declared for the project. This must be
 configured once on PyPI:
 
-- before the first release (the ``hfcpy`` project does not exist yet on PyPI), add
+- before the first release (the ``pyhfc`` project does not exist yet on PyPI), add
   a *pending publisher* in *Your account > Publishing*, with the project name
-  ``hfcpy`` and, for GitHub: owner ``HELIO-HFC``, repository ``HFCPy``, workflow
-  ``ci.yml``, environment ``pypi``; the first release then creates the project;
-- for GitLab, add a publisher in the *Publishing* settings of the ``hfcpy``
+  ``pyhfc`` and, for GitHub: owner ``HELIO-HFC`` (the organization, not a user),
+  repository ``PyHFC`` (the name only, not its url), workflow ``ci.yml``,
+  environment ``pypi``; the first release then creates the project;
+- for GitLab, add a publisher in the *Publishing* settings of the ``pyhfc``
   project once it exists (or as the pending publisher, if the first release is
   made from GitLab), with the GitLab namespace and project, the top-level
   pipeline file ``.gitlab-ci.yml`` and the environment ``pypi``.
@@ -349,7 +350,7 @@ environment in *Settings > Environments*, to approve each publication.
 LICENSE
 =======
 
-HFCPy is distributed under the European Union Public Licence v1.2
+PyHFC is distributed under the European Union Public Licence v1.2
 (EUPL-1.2), see the ``LICENSE`` file.
 
 

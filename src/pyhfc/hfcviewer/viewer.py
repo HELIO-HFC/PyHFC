@@ -22,11 +22,11 @@ from matplotlib.figure import Figure
 from numpy.typing import NDArray
 from PIL import Image
 
-from hfcpy import __version__
-from hfcpy.api import HQI_DEV_WSDL, HQI_WSDL, HQIClient, HQIError, Row, load_image
-from hfcpy.api.sql import sql_equals, to_datetime
-from hfcpy.api.tables import OBS_TABLE, PP_TABLE
-from hfcpy.improlib import auto_contrast, chain2image
+from pyhfc import __version__
+from pyhfc.api import HQI_DEV_WSDL, HQI_WSDL, HQIClient, HQIError, Row, load_image
+from pyhfc.api.sql import sql_equals, to_datetime
+from pyhfc.api.tables import OBS_TABLE, PP_TABLE
+from pyhfc.improlib import auto_contrast, chain2image
 
 __author__ = "Xavier Bonnin"
 __email__ = "xavier.bonnin@obspm.fr"

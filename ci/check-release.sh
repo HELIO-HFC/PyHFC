@@ -24,4 +24,4 @@ if ! git merge-base --is-ancestor "$commit" FETCH_HEAD; then
     exit 1
 fi
 
-echo "hfcpy $version ($tag) can be published"
+echo "Version $version ($tag) can be published"
