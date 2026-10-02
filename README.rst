@@ -84,6 +84,14 @@ The features to display are given with ``-f`` (``ar``: active regions, ``ch``:
 coronal holes, ``sp``: sunspots, ``rs``: radio sources, ``pr``: prominences,
 ``fi``: filaments; ``-f ""`` for none).
 
+The quicklook images are kept in a disk cache, so that they are displayed
+faster the next times. The cache is stored in the user cache directory
+(``~/Library/Caches/pyhfc`` on macOS, ``~/.cache/pyhfc`` on Linux; set the
+``PYHFC_CACHE_DIR`` environment variable to use another directory). Its maximum
+size is 100 MB by default: it can be changed, and the cache emptied, in the
+*Settings* menu. When the cache is full, the viewer says it, and the new images
+are no longer cached.
+
 To display help, run::
 
     uv run hfcviewer --help

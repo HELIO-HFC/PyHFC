@@ -25,10 +25,12 @@ from numpy.typing import NDArray
 from PIL import Image
 
 from pyhfc import __version__
-from pyhfc.api import HQI_DEV_WSDL, HQI_WSDL, HQIClient, HQIError, Row, load_image
+from pyhfc.api import HQI_DEV_WSDL, HQI_WSDL, HQIClient, HQIError, Row
+from pyhfc.api.quicklook import fetch_image, is_remote, open_image
 from pyhfc.api.sql import and_conditions, sql_equals, sql_where, to_datetime
 from pyhfc.api.tables import OBS_TABLE, PP_TABLE
 from pyhfc.hfcviewer import theme
+from pyhfc.hfcviewer.cache import MB, ImageCache, Settings
 from pyhfc.improlib import auto_contrast, chain2image
 
 __author__ = "Xavier Bonnin"
@@ -200,6 +202,11 @@ def wavelength_text(wavemin: Any, waveunit: Any) -> str:
     return f"{value:.4g} {unit}".strip()
 
 
+def plural(number: int, name: str) -> str:
+    """Return e.g. "1 image" or "3 images"."""
+    return f"{number} {name}" + ("" if number == 1 else "s")
+
+
 def parse_features(text: str) -> list[str]:
     """Parse a comma-separated list of feature keys (e.g. "ar,ch"; "" for none)."""
     keys = [key.strip().lower() for key in text.split(",") if key.strip()]
@@ -337,12 +344,18 @@ class Viewer(tk.Frame):
         ysize: int | None = None,
         dev: bool = False,
         features: Sequence[str] = FEATURE_KEYS,
+        settings: Settings | None = None,
+        cache: ImageCache | None = None,
     ) -> None:
         super().__init__(master, background=theme.WHITE)
         self.master: tk.Tk = master
         self._fonts = theme.apply_theme(master)
         # The HFC values are kept as strings, as returned by the service
         self._hqi = HQIClient(URL_WSDL_DEV if dev else url_wsdl, typed=False)
+        # Settings, and disk cache of the quicklook images
+        self._settings = settings if settings is not None else Settings.load()
+        self._cache = cache if cache is not None else ImageCache.from_settings(self._settings)
+        self._cache_full_warned = False
 
         self._date = tk.StringVar(value=date or input_date(datetime.now()))
         self._obsid = tk.IntVar()
@@ -374,6 +387,7 @@ class Viewer(tk.Frame):
         self._feat_data: dict[str, list[Row] | None] = {}
         self._feat_artists: list[Any] = []
         self._date_text: Any = None
+        self._dialog: tk.Toplevel | None = None
         self._xlim: tuple[float, float] = (0.0, 0.0)
         self._ylim: tuple[float, float] = (0.0, 0.0)
 
@@ -408,6 +422,11 @@ class Viewer(tk.Frame):
         )
         optmenu.add_cascade(label="Set colors", menu=colmenu)
         self._menubar.add_cascade(label="Options", menu=optmenu)
+
+        settingsmenu = tk.Menu(self._menubar, tearoff=0)
+        settingsmenu.add_command(label="Image cache…", command=self._cache_dialog)
+        settingsmenu.add_command(label="Empty the image cache…", command=self._empty_cache)
+        self._menubar.add_cascade(label="Settings", menu=settingsmenu)
 
         helpmenu = tk.Menu(self._menubar, tearoff=0)
         helpmenu.add_command(label="Help", command=self._show_help)
@@ -626,9 +645,134 @@ class Viewer(tk.Frame):
             return
         qclk_url = f"{self.obs_data['QCLK_URL']}/{self.obs_data['QCLK_FNAME']}"
         logger.info("Loading quicklook image from %s", qclk_url)
-        self.image = self._busy(lambda: load_image(qclk_url), "Loading the quicklook image…")
+        self.image = self._busy(lambda: self._load_image(qclk_url), "Loading the quicklook image…")
         # processed once here, not at each redraw
         self._image_array = image_to_array(self.image) if self.image is not None else None
+        if self._cache.full and not self._cache_full_warned:
+            self._cache_full_warned = True
+            self._warn_cache_full()
+
+    def _load_image(self, url: str) -> Image.Image | None:
+        """Load an image, from the disk cache if it is there (else it is cached)."""
+        data = self._cache.get(url)
+        if data is not None:
+            image = open_image(data, url)
+            if image is not None:
+                logger.info("Quicklook image loaded from the cache")
+                return image
+            self._cache.remove(url)  # invalid cached file
+        data = fetch_image(url)
+        if data is None:
+            return None
+        image = open_image(data, url)
+        if image is not None and is_remote(url):
+            self._cache.put(url, data)
+        return image
+
+    # ________________ Image cache ___________________
+
+    def _cache_usage(self) -> str:
+        return (
+            f"{self._cache.size() / MB:.1f} MB used of {self._cache.max_size / MB:.4g} MB "
+            f"({plural(len(self._cache), 'image')})"
+        )
+
+    def _warn_cache_full(self) -> None:
+        messagebox.showwarning(
+            "Image cache full",
+            f"The image cache is full: {self._cache_usage()}.\n\n"
+            "The new quicklook images are no longer stored in the cache. "
+            "You can empty the cache, or increase its maximum size, "
+            "in the Settings menu.",
+        )
+
+    def _set_cache_max_size(self, size_mb: int) -> None:
+        """Change the maximum size of the cache (in MB), and save it in the settings."""
+        self._settings.cache_max_size_mb = size_mb
+        self._settings.save()
+        self._cache.max_size = size_mb * MB
+        if not self._cache.full:
+            self._cache_full_warned = False
+        logger.info("Maximum size of the image cache: %i MB", size_mb)
+
+    def _empty_cache(self, confirm: bool = True) -> None:
+        """Remove all the cached images (after a confirmation)."""
+        number = len(self._cache)
+        if number == 0:
+            messagebox.showinfo("Image cache", "The image cache is already empty.")
+            return
+        if confirm and not messagebox.askyesno(
+            "Empty the image cache",
+            f"Remove {'the ' if number > 1 else ''}{plural(number, 'cached image')} "
+            f"({self._cache.size() / MB:.1f} MB)?",
+        ):
+            return
+        removed = self._cache.clear()
+        self._cache_full_warned = False
+        self._status.set(f"{plural(removed, 'cached image')} removed")
+
+    def _cache_dialog(self) -> None:
+        """Window to change the maximum size of the image cache, or to empty it."""
+        dialog = tk.Toplevel(self.master, background=theme.WHITE)
+        dialog.title("Image cache")
+        dialog.transient(self.master)
+        dialog.resizable(False, False)
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="Image cache", font=self._fonts.title).grid(
+            row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 10)
+        )
+        ttk.Label(frame, text="Location", style="Field.TLabel").grid(row=1, column=0, sticky=tk.W)
+        location = ttk.Entry(frame, width=48)
+        location.insert(0, str(self._cache.directory))
+        location.state(["readonly"])
+        location.grid(row=1, column=1, columnspan=2, sticky=tk.EW, pady=4)
+        ttk.Label(frame, text="Usage", style="Field.TLabel").grid(row=2, column=0, sticky=tk.W)
+        usage = tk.StringVar(value=self._cache_usage())
+        ttk.Label(frame, textvariable=usage).grid(
+            row=2, column=1, columnspan=2, sticky=tk.W, pady=4
+        )
+        ttk.Label(frame, text="Maximum size", style="Field.TLabel").grid(
+            row=3, column=0, sticky=tk.W, padx=(0, 12)
+        )
+        size = tk.StringVar(value=str(self._settings.cache_max_size_mb))
+        size_box = ttk.Frame(frame)
+        size_box.grid(row=3, column=1, columnspan=2, sticky=tk.W, pady=4)
+        ttk.Spinbox(size_box, from_=0, to=100_000, increment=10, textvariable=size, width=8).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(size_box, text="MB").pack(side=tk.LEFT, padx=(6, 0))
+
+        def empty() -> None:
+            self._empty_cache()
+            usage.set(self._cache_usage())
+
+        def save() -> None:
+            try:
+                size_mb = int(size.get())
+                if size_mb < 0:
+                    raise ValueError(size_mb)
+            except ValueError:
+                messagebox.showerror(
+                    "Image cache",
+                    "The maximum size must be a positive number of MB.",
+                    parent=dialog,
+                )
+                return
+            self._set_cache_max_size(size_mb)
+            dialog.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=(16, 0))
+        ttk.Button(buttons, text="Empty the cache", style="Secondary.TButton", command=empty).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(buttons, text="Save", command=save).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Cancel", style="Secondary.TButton", command=dialog.destroy).pack(
+            side=tk.RIGHT, padx=(0, 10)
+        )
+        self._dialog = dialog
 
     # ________________ Plot __________________________
 

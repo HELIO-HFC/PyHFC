@@ -14,6 +14,9 @@ Unreleased
   contours, units in the plot titles (e.g. ``17.1 nm``, or the frequency for the
   Nançay radioheliograph, e.g. ``150 MHz``), contours outlined to be visible on any
   image, and a status bar
+* hfcviewer: disk cache of the quicklook images, with a *Settings* menu to change its
+  maximum size (100 MB by default) and to empty it; when the cache is full, the user
+  is warned and the new images are no longer cached
 * hfcviewer: faster redraws, the quicklook image being processed once per observation
   and only the contours being redrawn when the features or their colors change
 

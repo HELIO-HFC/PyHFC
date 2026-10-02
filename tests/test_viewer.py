@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import re
 import tkinter as tk
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime
+from pathlib import Path
+from tkinter import ttk
 
 import numpy as np
 import pytest
@@ -14,9 +17,20 @@ from PIL import Image
 
 from pyhfc.api import HQIClient, sql_where
 from pyhfc.api.sql import nearest_date_order
+from pyhfc.hfcviewer import cache as cache_module
 from pyhfc.hfcviewer import viewer
 
 DATE = datetime(2012, 6, 1, 12, 0, 0)
+
+
+def png_bytes(size: tuple[int, int] = (64, 64)) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("L", size).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+#: Content of a 64x64 quicklook image
+PNG_64 = png_bytes()
 
 OBS_ROW = {
     "DATE_OBS": "2012-06-02T07:01:45",
@@ -228,7 +242,7 @@ def root() -> Iterator[tk.Tk]:
 def test_viewer_gui(
     root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(viewer, "load_image", lambda url, timeout=30: Image.new("L", (64, 64)))
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
     fake_service.responses += [
         make_response([OBS_ROW]),  # initial nearest observation
         make_response([FEATURE_ROW]),  # active regions
@@ -290,7 +304,7 @@ def test_viewer_gui_defaults(
 ) -> None:
     """By default: the most recent SDO/AIA observation at the current date and time,
     with the active regions and the coronal holes."""
-    monkeypatch.setattr(viewer, "load_image", lambda url, timeout=30: Image.new("L", (64, 64)))
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
     fake_service.responses += [
         make_response([OBS_ROW]),  # most recent SDO/AIA observation at the current time
         make_response([FEATURE_ROW]),  # active regions
@@ -323,7 +337,7 @@ def test_viewer_gui_latest_button(
     root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The "Latest" button loads the most recent observation at the current date and time."""
-    monkeypatch.setattr(viewer, "load_image", lambda url, timeout=30: Image.new("L", (64, 64)))
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
     fake_service.responses += [
         make_response([OBS_ROW]),  # observation nearest to the given date
         make_response([{**OBS_ROW, "DATE_OBS": "2026-10-02T07:59:33"}]),  # latest
@@ -359,7 +373,7 @@ def test_viewer_gui_latest_any_dataset_and_features(
     features: list[str],
 ) -> None:
     """The "Latest" button works whatever the selected data set and features."""
-    monkeypatch.setattr(viewer, "load_image", lambda url, timeout=30: Image.new("L", (64, 64)))
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
     fake_service.responses.append(make_response([OBS_ROW]))  # initial observation
     app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
 
@@ -420,7 +434,7 @@ def test_viewer_gui_features_redraw(
     root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Toggling a feature only redraws the contours: the image is processed once."""
-    monkeypatch.setattr(viewer, "load_image", lambda url, timeout=30: Image.new("L", (64, 64)))
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
     conversions: list[object] = []
     image_to_array = viewer.image_to_array
 
@@ -466,7 +480,7 @@ def test_viewer_gui_header(
     root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The header shows the logo of the LIRA, and no date format hint."""
-    monkeypatch.setattr(viewer, "load_image", lambda url, timeout=30: Image.new("L", (64, 64)))
+    monkeypatch.setattr(viewer, "fetch_image", lambda url, timeout=30: PNG_64)
     fake_service.responses.append(make_response([OBS_ROW]))
     app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
     assert app._logo is not None
@@ -497,3 +511,158 @@ def test_viewer_gui_header(
 )
 def test_feature_count_text(key: str, number: int, text: str) -> None:
     assert viewer.FEATURE_BY_KEY[key].count_text(number) == text
+
+
+# ________________ Image cache ___________________
+
+
+@pytest.fixture
+def cached_viewer(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> tuple[list[str], list[tuple[str, str]], Callable[..., viewer.Viewer]]:
+    """Factory of viewers, recording the downloads and the message boxes."""
+    downloads: list[str] = []
+    boxes: list[tuple[str, str]] = []
+
+    def fetch(url: str, timeout: float = 30) -> bytes:
+        downloads.append(url)
+        return PNG_64
+
+    monkeypatch.setattr(viewer, "fetch_image", fetch)
+    for kind in ("showwarning", "showinfo", "showerror"):
+        monkeypatch.setattr(
+            f"tkinter.messagebox.{kind}",
+            lambda title, msg, kind=kind, **kw: boxes.append((kind, msg)),
+        )
+
+    def make(**kwargs: object) -> viewer.Viewer:
+        fake_service.responses.append(make_response([OBS_ROW]))
+        return viewer.Viewer(root, date="2012-06-01T12:00:00", features=[], **kwargs)  # type: ignore[arg-type]
+
+    return downloads, boxes, make
+
+
+def test_viewer_cache_reuses_images(
+    cached_viewer: tuple[list[str], list[tuple[str, str]], Callable[..., viewer.Viewer]],
+) -> None:
+    downloads, boxes, make = cached_viewer
+    first = make()
+    assert downloads == ["ftp://example.org/qclk/image.png"]
+    assert len(first._cache) == 1
+    assert first._cache.directory == cache_module.user_cache_dir() / "images"
+    # the image of the same observation is read from the disk cache
+    second = make()
+    assert len(downloads) == 1
+    assert second.image is not None
+    assert second.image.size == (64, 64)
+    assert boxes == []
+
+
+def test_viewer_cache_invalid_file(
+    cached_viewer: tuple[list[str], list[tuple[str, str]], Callable[..., viewer.Viewer]],
+) -> None:
+    downloads, _, make = cached_viewer
+    app = make()
+    app._cache.path(downloads[0]).write_bytes(b"corrupted")
+    app = make()
+    # downloaded again, and the cache fixed
+    assert len(downloads) == 2
+    assert app.image is not None
+    assert app._cache.get(downloads[0]) == PNG_64
+
+
+def test_viewer_cache_full(
+    cached_viewer: tuple[list[str], list[tuple[str, str]], Callable[..., viewer.Viewer]],
+    tmp_path: Path,
+) -> None:
+    downloads, boxes, make = cached_viewer
+    small = cache_module.ImageCache(tmp_path / "small", len(PNG_64) - 1)
+    app = make(cache=small)
+    # the image is displayed, but not cached, and the user is warned once
+    assert app.image is not None
+    assert len(small) == 0
+    assert small.full
+    assert [kind for kind, _ in boxes] == ["showwarning"]
+    assert "The image cache is full" in boxes[0][1]
+    assert "Settings menu" in boxes[0][1]
+    app._load_qclk()
+    assert len(boxes) == 1  # no new warning
+    assert len(small) == 0  # no new image cached
+
+    # increasing the maximum size (saved in the settings) resumes the caching
+    app._set_cache_max_size(1)
+    assert cache_module.Settings.load().cache_max_size_mb == 1
+    assert small.max_size == cache_module.MB
+    assert not small.full
+    app._load_qclk()
+    assert len(small) == 1
+    assert len(downloads) == 3
+
+
+def test_viewer_empty_cache(
+    cached_viewer: tuple[list[str], list[tuple[str, str]], Callable[..., viewer.Viewer]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, boxes, make = cached_viewer
+    app = make()
+    assert len(app._cache) == 1
+    answers = [False, True]
+    monkeypatch.setattr("tkinter.messagebox.askyesno", lambda title, msg: answers.pop(0))
+    app._empty_cache()  # cancelled
+    assert len(app._cache) == 1
+    app._empty_cache()
+    assert len(app._cache) == 0
+    assert app._status.get() == "1 cached image removed"
+    app._empty_cache()
+    assert boxes[-1] == ("showinfo", "The image cache is already empty.")
+
+
+def test_viewer_settings_menu_and_dialog(
+    cached_viewer: tuple[list[str], list[tuple[str, str]], Callable[..., viewer.Viewer]],
+) -> None:
+    _, boxes, make = cached_viewer
+    app = make()
+    last = app._menubar.index("end")
+    assert last is not None
+    menus = [app._menubar.entrycget(i, "label") for i in range(last + 1)]
+    assert "Settings" in menus
+
+    app._cache_dialog()
+    dialog = app._dialog
+    assert dialog is not None
+    assert dialog.title() == "Image cache"
+
+    def widgets(widget: tk.Misc) -> list[tk.Misc]:
+        children = widget.winfo_children()
+        return children + [w for child in children for w in widgets(child)]
+
+    found = widgets(dialog)
+    spinbox = next(w for w in found if isinstance(w, ttk.Spinbox))
+    buttons = {w.cget("text"): w for w in found if isinstance(w, ttk.Button)}
+    labels = [str(w.cget("text")) for w in found if isinstance(w, ttk.Label)]
+    assert spinbox.get() == "100"
+    assert {"Empty the cache", "Cancel", "Save"} <= set(buttons)
+    usages = [
+        w.getvar(str(w.cget("textvariable")))
+        for w in found
+        if isinstance(w, ttk.Label) and str(w.cget("textvariable"))
+    ]
+    assert usages == [app._cache_usage()]
+    assert usages[0].endswith("MB used of 100 MB (1 image)")
+    assert "Maximum size" in labels
+
+    spinbox.set("abc")
+    buttons["Save"].invoke()
+    assert boxes[-1][0] == "showerror"
+    assert dialog.winfo_exists()
+
+    spinbox.set("250")
+    buttons["Save"].invoke()
+    assert not dialog.winfo_exists()
+    assert app._cache.max_size == 250 * cache_module.MB
+    assert cache_module.Settings.load().cache_max_size_mb == 250
+
+
+@pytest.mark.parametrize(("number", "text"), [(0, "0 images"), (1, "1 image"), (3, "3 images")])
+def test_plural(number: int, text: str) -> None:
+    assert viewer.plural(number, "image") == text

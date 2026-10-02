@@ -13,7 +13,7 @@ from urllib.request import urlopen
 
 from PIL import Image
 
-__all__ = ["load_image", "quicklook_url"]
+__all__ = ["fetch_image", "is_remote", "load_image", "open_image", "quicklook_url"]
 
 logger = logging.getLogger(__name__)
 
@@ -27,28 +27,46 @@ def quicklook_url(row: Mapping[str, Any]) -> str | None:
     return f"{str(url).rstrip('/')}/{fname}"
 
 
+def is_remote(file: str | Path) -> bool:
+    """Return True if ``file`` is a remote url (http, https, ftp)."""
+    return str(file).startswith(("http:", "https:", "ftp:"))
+
+
+def fetch_image(file: str | Path, timeout: float = 30) -> bytes | None:
+    """Return the content of an image file, remote (http, https, ftp) or local.
+
+    Return None if it can not be read.
+    """
+    file = str(file)
+    try:
+        if is_remote(file):
+            with urlopen(file, timeout=timeout) as response:
+                return bytes(response.read())
+        return Path(file).read_bytes()
+    except FileNotFoundError:
+        logger.error("%s does not exist!", file)
+    except (URLError, OSError) as err:
+        logger.error("Can not load %s: %s", file, err)
+    return None
+
+
+def open_image(data: bytes, name: str = "image") -> Image.Image | None:
+    """Decode the content of an image file; return None if it is not a valid image."""
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.load()
+    except OSError as err:
+        logger.error("Can not read image %s: %s", name, err)
+        return None
+    return image
+
+
 def load_image(file: str | Path, timeout: float = 30) -> Image.Image | None:
     """Load an image remotely (http, https, ftp) or locally.
 
     Return None if the image can not be loaded.
     """
-    file = str(file)
-    if file.startswith(("http:", "https:", "ftp:")):
-        try:
-            with urlopen(file, timeout=timeout) as response:
-                source: io.BytesIO | Path = io.BytesIO(response.read())
-        except (URLError, OSError) as err:
-            logger.error("Can not load %s: %s", file, err)
-            return None
-    else:
-        source = Path(file)
-        if not source.is_file():
-            logger.error("%s does not exist!", file)
-            return None
-    try:
-        image = Image.open(source)
-        image.load()
-    except OSError as err:
-        logger.error("Can not read image %s: %s", file, err)
+    data = fetch_image(file, timeout=timeout)
+    if data is None:
         return None
-    return image
+    return open_image(data, str(file))

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from xml.sax.saxutils import escape, quoteattr
@@ -107,6 +108,13 @@ class FakeService:
     def params(self) -> list[dict[str, Any]]:
         """Parameters of the calls."""
         return [params for _, params in self.calls]
+
+
+@pytest.fixture(autouse=True)
+def isolated_user_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never use the cache and the settings of the user in the tests."""
+    monkeypatch.setenv("PYHFC_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("PYHFC_CONFIG_DIR", str(tmp_path / "config"))
 
 
 @pytest.fixture
