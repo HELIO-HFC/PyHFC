@@ -2,6 +2,13 @@ hfcViewer CHANGELOG
 -------------------
 
 
+Unreleased
+==========
+* hfcviewer: display by default the most recent SDO/AIA observation at the current
+  date and time, with the active regions and the coronal holes
+* hfcviewer: add a *Latest* button, displaying the most recent observation of the
+  selected data set, and a ``-f/--features`` option choosing the features to display
+
 Version 0.3.0
 =============
 * Rename the Python package to ``pyhfc`` (the viewer command is still ``hfcviewer``)

@@ -24,7 +24,7 @@ from PIL import Image
 
 from pyhfc import __version__
 from pyhfc.api import HQI_DEV_WSDL, HQI_WSDL, HQIClient, HQIError, Row, load_image
-from pyhfc.api.sql import sql_equals, to_datetime
+from pyhfc.api.sql import and_conditions, sql_equals, sql_where, to_datetime
 from pyhfc.api.tables import OBS_TABLE, PP_TABLE
 from pyhfc.improlib import auto_contrast, chain2image
 
@@ -122,11 +122,13 @@ DATASETS = (
     DataSet("MEUDON_SH_K3", "Meudon", "Spectroheliograph", wavename="CAII K3", table=PP_HFC_TABLE),
 )
 
-# Default input arguments
-OBSERVATORY = "Nancay"
-INSTRUMENT = "Radioheliograph"
+# Default input arguments: the most recent SDO/AIA observation at the current
+# date and time, with the active regions and the coronal holes
+OBSERVATORY = "SDO"
+INSTRUMENT = "AIA"
 TELESCOPE = ""
 WAVENAME = ""
+FEATURE_KEYS = ("ar", "ch")
 
 
 # ________________ Global Functions __________
@@ -134,6 +136,16 @@ WAVENAME = ""
 
 def input_date(date: datetime) -> str:
     return date.strftime(HQI_TFORMAT)
+
+
+def parse_features(text: str) -> list[str]:
+    """Parse a comma-separated list of feature keys (e.g. "ar,ch"; "" for none)."""
+    keys = [key.strip().lower() for key in text.split(",") if key.strip()]
+    unknown = [key for key in keys if key not in FEATURE_BY_KEY]
+    if unknown:
+        known = ", ".join(FEATURE_BY_KEY)
+        raise ValueError(f"Unknown feature(s): {', '.join(unknown)} (known: {known})")
+    return keys
 
 
 def find_dataset(
@@ -161,18 +173,30 @@ def find_dataset(
     return candidates[0] if candidates else None
 
 
-DIRECTIONS = ("nearest", "previous", "next")
+DIRECTIONS = ("nearest", "latest", "previous", "next")
 
 
 def load_observation(
     hqi: HQIClient, dataset: DataSet, date: datetime, direction: str = "nearest"
 ) -> Row | None:
-    """Return the observation of a data set nearest to/before/after a date.
+    """Return an observation of a data set, relatively to a date.
 
-    ``direction`` is either "nearest", "previous" or "next".
+    ``direction`` is either "nearest" (the observation nearest to the date),
+    "latest" (the most recent observation at the date, i.e. at or before it),
+    "previous" (the last one strictly before the date) or "next" (the first one
+    strictly after the date).
     """
     if direction not in DIRECTIONS:
         raise ValueError(f"Unknown direction: {direction}")
+    if direction == "latest":
+        response = hqi.select(
+            dataset.table,
+            what=OBS_FIELDS,
+            where=and_conditions(dataset.where(), sql_where({"DATE_OBS": (None, date)})),
+            order_by="DATE_OBS DESC",
+            limit=1,
+        )
+        return response.first()
     method = getattr(hqi, direction)
     row: Row | None = method(dataset.table, date, what=OBS_FIELDS, where=dataset.where())
     return row
@@ -250,6 +274,7 @@ class Viewer(tk.Frame):
         xsize: int | None = None,
         ysize: int | None = None,
         dev: bool = False,
+        features: Sequence[str] = FEATURE_KEYS,
     ) -> None:
         super().__init__(master)
         self.master: tk.Tk = master
@@ -269,7 +294,9 @@ class Viewer(tk.Frame):
         self.master.geometry(f"{width}x{height}")
 
         # Feature check buttons states
-        self._feat_on = {feature.key: tk.IntVar() for feature in FEATURES}
+        self._feat_on = {
+            feature.key: tk.IntVar(value=int(feature.key in features)) for feature in FEATURES
+        }
         # Feature contour color table (0: by feature, 1: by tracking)
         self._feat_ct = tk.IntVar(value=0)
 
@@ -283,7 +310,12 @@ class Viewer(tk.Frame):
         self.master.config(menu=self._menubar, bg=BG_COLOR)
         self._place_widgets()
 
-        self._set_date()  # load and plot observation for self._date
+        # Load and plot the observation nearest to the given date or, by default,
+        # the most recent observation at the current date and time
+        if date:
+            self._set_date()
+        else:
+            self._latest_date()
 
     @property
     def dataset(self) -> DataSet:
@@ -323,6 +355,14 @@ class Viewer(tk.Frame):
         )
         rbtn = tk.Button(
             hframe, text="Next", bg=BG_COLOR, highlightbackground=BG_COLOR, command=self._next_date
+        )
+        # Most recent observation at the current date and time
+        self._latest_btn = tk.Button(
+            hframe,
+            text="Latest",
+            bg=BG_COLOR,
+            highlightbackground=BG_COLOR,
+            command=self._latest_date,
         )
         self._header = tk.Entry(hframe, highlightbackground=BG_COLOR, textvariable=self._date)
         self._header.bind("<Return>", self._date_event)
@@ -368,6 +408,7 @@ class Viewer(tk.Frame):
         lbtn.grid()
         self._header.grid(column=1, row=0, padx=12)
         rbtn.grid(column=2, row=0)
+        self._latest_btn.grid(column=3, row=0, padx=(12, 0))
         iframe.pack(expand=True, fill="both", side="left")
         oframe.pack(expand=False, fill="both", side="left")
         dlabel.pack(anchor=tk.CENTER, ipady=2)
@@ -389,6 +430,12 @@ class Viewer(tk.Frame):
     def _next_date(self) -> None:
         logger.info("Loading next date...")
         self._load_observation("next")
+
+    def _latest_date(self) -> None:
+        """Load the most recent observation at the current date and time."""
+        logger.info("Loading the most recent observation...")
+        self._date.set(input_date(datetime.now()))
+        self._load_observation("latest")
 
     def _current_date(self) -> datetime | None:
         date_obs = self._date.get().strip()
@@ -566,15 +613,37 @@ class Viewer(tk.Frame):
 # ________________ Main __________________________
 
 
+def _features_arg(text: str) -> list[str]:
+    try:
+        return parse_features(text)
+    except ValueError as err:
+        raise argparse.ArgumentTypeError(str(err)) from err
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="hfcviewer", description=__doc__)
     parser.add_argument(
-        "-d", "--date", help="Date of observation (YYYY-MM-DDTHH:MM:SS, default: now)"
+        "-d",
+        "--date",
+        help=(
+            "Date of observation (YYYY-MM-DDTHH:MM:SS); the observation nearest to this "
+            "date is displayed (default: the most recent one at the current date and time)"
+        ),
     )
     parser.add_argument("-o", "--observatory", default=OBSERVATORY, help="Name of the observatory")
     parser.add_argument("-i", "--instrument", default=INSTRUMENT, help="Name of the instrument")
     parser.add_argument("-t", "--telescope", default=TELESCOPE, help="Name of the telescope")
     parser.add_argument("-w", "--wavename", default=WAVENAME, help="Name of the wavename")
+    parser.add_argument(
+        "-f",
+        "--features",
+        type=_features_arg,
+        default=list(FEATURE_KEYS),
+        help=(
+            "Comma-separated features to display "
+            f"({', '.join(FEATURE_BY_KEY)}; default: {','.join(FEATURE_KEYS)}; '' for none)"
+        ),
+    )
     parser.add_argument("-u", "--url_wsdl", default=URL_WSDL, help="Url of the wsdl file to load")
     parser.add_argument("-x", "--xsize", type=int, help="Window width on screen in pixels")
     parser.add_argument("-y", "--ysize", type=int, help="Window height on screen in pixels")
@@ -608,6 +677,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         xsize=args.xsize,
         ysize=args.ysize,
         dev=args.dev,
+        features=args.features,
     )
     viewer.pack(expand=True, fill="both")
     root.mainloop()

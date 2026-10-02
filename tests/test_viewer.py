@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 from __future__ import annotations
 
+import re
 import tkinter as tk
 from collections.abc import Iterator
 from datetime import datetime
@@ -84,6 +85,7 @@ def test_dataset_where_and_title() -> None:
         ("nearest", None, nearest_date_order(DATE)),
         ("previous", "(DATE_OBS < '2012-06-01 12:00:00')", "DATE_OBS DESC"),
         ("next", "(DATE_OBS > '2012-06-01 12:00:00')", "DATE_OBS ASC"),
+        ("latest", "(DATE_OBS <= '2012-06-01 12:00:00')", "DATE_OBS DESC"),
     ],
 )
 def test_load_observation(
@@ -184,6 +186,30 @@ def test_parse_args() -> None:
     assert args.ysize is None
 
 
+def test_parse_args_defaults() -> None:
+    args = viewer.parse_args([])
+    assert args.date is None
+    assert (args.observatory, args.instrument) == ("SDO", "AIA")
+    assert args.features == ["ar", "ch"]
+
+
+@pytest.mark.parametrize(
+    ("text", "features"),
+    [("ar,ch", ["ar", "ch"]), (" SP , fi ", ["sp", "fi"]), ("", []), ("ar,", ["ar"])],
+)
+def test_parse_features(text: str, features: list[str]) -> None:
+    assert viewer.parse_features(text) == features
+    assert viewer.parse_args(["-f", text]).features == features
+
+
+def test_parse_features_unknown(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(ValueError, match="Unknown feature"):
+        viewer.parse_features("ar,xx")
+    with pytest.raises(SystemExit):
+        viewer.parse_args(["-f", "xx"])
+    assert "Unknown feature" in capsys.readouterr().err
+
+
 # ________________ GUI ___________________________
 
 
@@ -210,7 +236,11 @@ def test_viewer_gui(
     ]
 
     app = viewer.Viewer(
-        root, date="2012-06-01T12:00:00", observatory="Meudon", instrument="Spectroheliograph"
+        root,
+        date="2012-06-01T12:00:00",
+        observatory="Meudon",
+        instrument="Spectroheliograph",
+        features=[],
     )
     assert app.dataset.label == "MEUDON_SH_HA"
     assert app._date.get() == "2012-06-02T07:01:45"
@@ -249,3 +279,105 @@ def test_viewer_gui_query_error(
     app = viewer.Viewer(root, date="2012-06-01T12:00:00")
     assert errors == ["QUERYING HFC HAS FAILED!"]
     assert app.obs_data is None
+
+
+def test_viewer_gui_defaults(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """By default: the most recent SDO/AIA observation at the current date and time,
+    with the active regions and the coronal holes."""
+    monkeypatch.setattr(viewer, "load_image", lambda url, timeout=30: Image.new("L", (64, 64)))
+    fake_service.responses += [
+        make_response([OBS_ROW]),  # most recent SDO/AIA observation at the current time
+        make_response([FEATURE_ROW]),  # active regions
+        make_response([], [("DATE_OBS", "char")]),  # no coronal holes
+    ]
+    before = datetime.now().replace(microsecond=0)
+    app = viewer.Viewer(root)
+    after = datetime.now()
+
+    assert app.dataset.label == "SDO_AIA"
+    assert {key for key, var in app._feat_on.items() if var.get()} == {"ar", "ch"}
+
+    observation, active_regions, coronal_holes = fake_service.params
+    # most recent observation at the current date and time
+    assert observation["FROM"] == [viewer.OBS_HFC_TABLE]
+    assert "(UPPER(OBSERVAT) = 'SDO')" in observation["WHERE"]
+    assert "(UPPER(INSTRUME) = 'AIA')" in observation["WHERE"]
+    assert observation["ORDER_BY"] == "DATE_OBS DESC"
+    assert observation["LIMIT"] == 1
+    match = re.search(r"\(DATE_OBS <= '([^']+)'\)", observation["WHERE"])
+    assert match is not None
+    assert before <= datetime.fromisoformat(match.group(1)) <= after
+    # both features are loaded and plotted
+    assert active_regions["FROM"] == ["VIEW_AR_HQI"]
+    assert coronal_holes["FROM"] == ["VIEW_CH_HQI"]
+    assert len(app._plt.lines) == 1
+
+
+def test_viewer_gui_latest_button(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The "Latest" button loads the most recent observation at the current date and time."""
+    monkeypatch.setattr(viewer, "load_image", lambda url, timeout=30: Image.new("L", (64, 64)))
+    fake_service.responses += [
+        make_response([OBS_ROW]),  # observation nearest to the given date
+        make_response([{**OBS_ROW, "DATE_OBS": "2026-10-02T07:59:33"}]),  # latest
+    ]
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+    assert app._date.get() == "2012-06-02T07:01:45"
+    assert app._latest_btn.cget("text") == "Latest"
+
+    before = datetime.now().replace(microsecond=0)
+    app._latest_btn.invoke()
+    after = datetime.now()
+
+    assert app._date.get() == "2026-10-02T07:59:33"
+    latest = fake_service.params[1]
+    assert latest["ORDER_BY"] == "DATE_OBS DESC"
+    assert latest["LIMIT"] == 1
+    assert "(UPPER(INSTRUME) = 'AIA')" in latest["WHERE"]
+    match = re.search(r"\(DATE_OBS <= '([^']+)'\)", latest["WHERE"])
+    assert match is not None
+    assert before <= datetime.fromisoformat(match.group(1)) <= after
+
+
+FEATURE_SETS = [[f.key for f in viewer.FEATURES], ["ar", "ch"], ["sp", "rs", "pr", "fi"], []]
+
+
+@pytest.mark.parametrize("features", FEATURE_SETS, ids=lambda keys: ",".join(keys) or "none")
+@pytest.mark.parametrize("dataset", viewer.DATASETS, ids=lambda ds: ds.label)
+def test_viewer_gui_latest_any_dataset_and_features(
+    root: tk.Tk,
+    fake_service: FakeService,
+    monkeypatch: pytest.MonkeyPatch,
+    dataset: viewer.DataSet,
+    features: list[str],
+) -> None:
+    """The "Latest" button works whatever the selected data set and features."""
+    monkeypatch.setattr(viewer, "load_image", lambda url, timeout=30: Image.new("L", (64, 64)))
+    fake_service.responses.append(make_response([OBS_ROW]))  # initial observation
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+
+    # select the data set and the features
+    app._obsid.set(viewer.DATASETS.index(dataset))
+    for key, var in app._feat_on.items():
+        var.set(int(key in features))
+    checked = [feature for feature in viewer.FEATURES if feature.key in features]
+    fake_service.responses.append(make_response([{**OBS_ROW, "DATE_OBS": "2026-10-02T07:59:33"}]))
+    fake_service.responses += [make_response([FEATURE_ROW]) for _ in checked]
+
+    app._latest_btn.invoke()
+
+    assert app._date.get() == "2026-10-02T07:59:33"
+    latest, *feature_queries = fake_service.params[1:]
+    # the most recent observation of the selected data set
+    assert latest["FROM"] == [dataset.table]
+    assert latest["WHERE"].startswith(f"({dataset.where()}) AND ((DATE_OBS <= '")
+    assert latest["ORDER_BY"] == "DATE_OBS DESC"
+    # all the checked features, around the date of this observation
+    assert [q["FROM"] for q in feature_queries] == [[f.table] for f in checked]
+    for query in feature_queries:
+        assert "'2026-10-02 06:59:33' AND '2026-10-02 08:59:33'" in query["WHERE"]
+    assert len(app._plt.lines) == len(checked)
+    assert app.image is not None

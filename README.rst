@@ -69,9 +69,20 @@ or, equivalently::
 
     uv run python -m pyhfc.hfcviewer
 
-For instance, to display the Meudon H-alpha observation nearest to a date::
+By default, the viewer displays the most recent SDO/AIA observation at the
+current date and time, with the active regions and the coronal holes detected
+on it (note that the HFC has no coronal holes after 2013-10-13). The *Previous*
+and *Next* buttons browse the observations of the selected data set, and the
+*Latest* button goes back to its most recent observation.
 
-    uv run hfcviewer -d 2012-06-01T12:00:00 -o Meudon -i Spectroheliograph -w Halpha
+For instance, to display the Meudon H-alpha observation nearest to a date,
+with the filaments and the prominences::
+
+    uv run hfcviewer -d 2012-06-01T12:00:00 -o Meudon -i Spectroheliograph -w Halpha -f fi,pr
+
+The features to display are given with ``-f`` (``ar``: active regions, ``ch``:
+coronal holes, ``sp``: sunspots, ``rs``: radio sources, ``pr``: prominences,
+``fi``: filaments; ``-f ""`` for none).
 
 To display help, run::
 
