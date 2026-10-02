@@ -2,8 +2,8 @@ hfcViewer CHANGELOG
 -------------------
 
 
-Unreleased
-==========
+Version 0.4.0
+=============
 * hfcviewer: display by default the most recent SDO/AIA observation at the current
   date and time, with the active regions and the coronal holes
 * hfcviewer: add a *Latest* button, displaying the most recent observation of the
@@ -29,6 +29,8 @@ Unreleased
   helio.support@sympa.obspm.fr
 * api: ``HQIClient.ping()`` and ``pyhfc.api.quicklook.server_reachable()`` check that
   the HQI and a server of images are reachable
+* api: ``fetch_image()`` and ``open_image()`` in ``pyhfc.api.quicklook`` read and decode
+  the quicklook images (``load_image()`` being unchanged)
 * hfcviewer: time range dt of each feature (*Options > Set time ranges*, 0 by default):
   the contours detected in [t - dt, t + dt] around the date t of the observation are
   displayed on the same image, colored by tracking by default; a *Reset* button sets

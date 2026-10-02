@@ -1,6 +1,6 @@
 [project]
 name = "pyhfc"
-version = "0.3.0"
+version = "0.4.0"
 description = "Python tools for the HELIO Heliophysics Feature Catalogue (HFC): HQI client and viewer"
 readme = "README.rst"
 license = "EUPL-1.2"
