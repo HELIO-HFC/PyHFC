@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 """Python viewer for the Heliophysics Feature Catalogue (HFC).
 
-@author: Xavier Bonnin (LESIA)
+@author: Xavier Bonnin (LIRA)
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from pyhfc.improlib import auto_contrast, chain2image
 __author__ = "Xavier Bonnin"
 __email__ = "xavier.bonnin@obspm.fr"
 __project__ = "HELIO (FP7 project No. 238969)"
-__institute__ = "LESIA"
+__institute__ = "LIRA"
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,9 @@ FEATURE_FIELDS = (
 # Time window (around the observation date) used to look for features
 FEATURE_TIME_WINDOW = timedelta(hours=1)
 
+# Height of the logo in the header, in pixels
+LOGO_HEIGHT = 64
+
 
 @dataclass(frozen=True)
 class Feature:
@@ -67,15 +70,23 @@ class Feature:
     label: str
     table: str
     color: str
+    #: singular name, used to count the features (e.g. "1 NRH source", "4 active regions")
+    name: str = ""
+
+    def count_text(self, number: int) -> str:
+        name = self.name or self.label.lower()
+        if number == 0:
+            return f"no {name}s"
+        return f"{number} {name}" + ("s" if number > 1 else "")
 
 
 FEATURES = (
-    Feature("ar", "Active regions", "VIEW_AR_HQI", theme.FEATURE_COLORS["ar"]),
-    Feature("ch", "Coronal holes", "VIEW_CH_HQI", theme.FEATURE_COLORS["ch"]),
-    Feature("sp", "Sunspots", "VIEW_SP_HQI", theme.FEATURE_COLORS["sp"]),
-    Feature("rs", "NRH sources", "VIEW_RS_HQI", theme.FEATURE_COLORS["rs"]),
-    Feature("pr", "Prominences", "VIEW_PRO_HQI", theme.FEATURE_COLORS["pr"]),
-    Feature("fi", "Filaments", "VIEW_FIL_HQI", theme.FEATURE_COLORS["fi"]),
+    Feature("ar", "Active regions", "VIEW_AR_HQI", theme.FEATURE_COLORS["ar"], "active region"),
+    Feature("ch", "Coronal holes", "VIEW_CH_HQI", theme.FEATURE_COLORS["ch"], "coronal hole"),
+    Feature("sp", "Sunspots", "VIEW_SP_HQI", theme.FEATURE_COLORS["sp"], "sunspot"),
+    Feature("rs", "NRH sources", "VIEW_RS_HQI", theme.FEATURE_COLORS["rs"], "NRH source"),
+    Feature("pr", "Prominences", "VIEW_PRO_HQI", theme.FEATURE_COLORS["pr"], "prominence"),
+    Feature("fi", "Filaments", "VIEW_FIL_HQI", theme.FEATURE_COLORS["fi"], "filament"),
 )
 FEATURE_BY_KEY = {feature.key: feature for feature in FEATURES}
 
@@ -172,18 +183,21 @@ SPEED_OF_LIGHT = 299_792_458.0  # m/s
 
 
 def wavelength_text(wavemin: Any, waveunit: Any) -> str:
-    """Format a wavelength for display, e.g. "17.1 nm" or "1.999 m (150 MHz)"."""
+    """Format a wavelength for display, e.g. "17.1 nm".
+
+    Radio observations (wavelength in meters) are given by their frequency,
+    e.g. "150 MHz".
+    """
     unit_key = str(waveunit or "").strip().upper()
     unit = WAVE_UNITS.get(unit_key, str(waveunit or "").strip())
     try:
         value = float(wavemin)
     except (TypeError, ValueError):
         return f"{wavemin} {unit}".strip()
-    text = f"{value:.4g} {unit}".strip()
     if unit_key == "M" and value > 0:
-        # radio observations: also give the frequency
-        text += f" ({SPEED_OF_LIGHT / value / 1e6:.0f} MHz)"
-    return text
+        # radio observations: frequency of observation
+        return f"{SPEED_OF_LIGHT / value / 1e6:.0f} MHz"
+    return f"{value:.4g} {unit}".strip()
 
 
 def parse_features(text: str) -> list[str]:
@@ -415,9 +429,14 @@ class Viewer(tk.Frame):
         """Anthracite band with a violet brand block, as on the LIRA website."""
         header = ttk.Frame(self, style="Header.TFrame")
         header.pack(side=tk.TOP, fill=tk.X)
-        ttk.Label(header, text="HFC", style="Brand.TLabel", padding=(18, 12)).pack(
-            side=tk.LEFT, fill=tk.Y
-        )
+        # logo of the LIRA (or a violet "HFC" block if it is not available)
+        self._logo = theme.load_logo(LOGO_HEIGHT, master=self.master)
+        if self._logo is not None:
+            ttk.Label(header, image=self._logo, style="Brand.TLabel", padding=0).pack(side=tk.LEFT)
+        else:
+            ttk.Label(header, text="HFC", style="Brand.TLabel", padding=(18, 12)).pack(
+                side=tk.LEFT, fill=tk.Y
+            )
         ttk.Label(header, text="HFC Viewer", style="Header.TLabel", padding=(16, 8, 10, 8)).pack(
             side=tk.LEFT
         )
@@ -444,9 +463,6 @@ class Viewer(tk.Frame):
         # Most recent observation at the current date and time
         self._latest_btn = ttk.Button(nav, text="Latest", command=self._latest_date)
         self._latest_btn.pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Label(
-            nav, text="Format: YYYY-MM-DDTHH:MM:SS, then press Return", style="Field.TLabel"
-        ).pack(side=tk.LEFT, padx=(16, 0))
         ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.TOP, fill=tk.X)
 
     def _place_status_bar(self) -> None:
@@ -750,8 +766,7 @@ class Viewer(tk.Frame):
         for feature in FEATURES:
             count = self._feat_count[feature.key].get()
             if count:
-                number = "no" if count == "none" else count
-                parts.append(f"{number} {feature.label.lower()}")
+                parts.append(feature.count_text(0 if count == "none" else int(count)))
         self._status.set("   ·   ".join(parts))
 
     def _load_feat(self, feature: Feature) -> list[Row] | None:
@@ -787,7 +802,7 @@ class Viewer(tk.Frame):
             f"HFC Viewer {__version__}\n"
             "\n"
             "HFC Viewer for Python is developed and\n"
-            "maintained by LESIA-Observatoire de Paris.\n"
+            "maintained by LIRA-Observatoire de Paris.\n"
             "\n"
             "More information about available data\n"
             "can be found on the HFC web page:\n"

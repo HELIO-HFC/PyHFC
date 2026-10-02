@@ -11,7 +11,7 @@ The HQI is a SOAP web service returning VOTables. Its methods are wrapped by
     for row in response:
         print(row["DATE_OBS"], row["NOAA_NUMBER"])
 
-@author: Xavier Bonnin for LESIA 11-03-2013
+@author: Xavier Bonnin for LIRA 11-03-2013
 """
 
 from __future__ import annotations

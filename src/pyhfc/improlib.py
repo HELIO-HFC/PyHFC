@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 """Image processing routines used by the HFC viewer.
 
-Author: Xavier Bonnin (LESIA)
+Author: Xavier Bonnin (LIRA)
 """
 
 from __future__ import annotations

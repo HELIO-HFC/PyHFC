@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 from __future__ import annotations
 
+import contextlib
 import re
 import tkinter as tk
 from collections.abc import Iterator
@@ -392,7 +393,8 @@ def test_viewer_gui_latest_any_dataset_and_features(
         ("17.1", "NM", "17.1 nm"),
         (656.3, "nm", "656.3 nm"),
         ("617.133", "NM", "617.1 nm"),
-        ("1.99862", "M", "1.999 m (150 MHz)"),
+        ("1.99862", "M", "150 MHz"),
+        ("1.828", "M", "164 MHz"),
         ("5000", "A", "5000 Å"),
         ("12", "XX", "12 XX"),
         ("", "NM", "nm"),
@@ -458,3 +460,40 @@ def test_viewer_gui_features_redraw(
     # the image artist is kept, and the image was processed only once
     assert list(app._plt.images) == [image]
     assert len(conversions) == 1
+
+
+def test_viewer_gui_header(
+    root: tk.Tk, fake_service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The header shows the logo of the LIRA, and no date format hint."""
+    monkeypatch.setattr(viewer, "load_image", lambda url, timeout=30: Image.new("L", (64, 64)))
+    fake_service.responses.append(make_response([OBS_ROW]))
+    app = viewer.Viewer(root, date="2012-06-01T12:00:00", features=[])
+    assert app._logo is not None
+    assert app._logo.height() == viewer.LOGO_HEIGHT
+
+    def texts(widget: tk.Misc) -> list[str]:
+        found = []
+        for child in widget.winfo_children():
+            with contextlib.suppress(tk.TclError):
+                found.append(str(child.cget("text")))
+            found += texts(child)
+        return found
+
+    all_texts = texts(app)
+    assert not any(text.startswith("Format") for text in all_texts)
+    assert "HFC" not in all_texts  # replaced by the logo
+
+
+@pytest.mark.parametrize(
+    ("key", "number", "text"),
+    [
+        ("rs", 1, "1 NRH source"),
+        ("rs", 3, "3 NRH sources"),
+        ("ar", 4, "4 active regions"),
+        ("ch", 0, "no coronal holes"),
+        ("sp", 1, "1 sunspot"),
+    ],
+)
+def test_feature_count_text(key: str, number: int, text: str) -> None:
+    assert viewer.FEATURE_BY_KEY[key].count_text(number) == text

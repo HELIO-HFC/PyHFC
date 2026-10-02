@@ -8,10 +8,11 @@ Unreleased
   date and time, with the active regions and the coronal holes
 * hfcviewer: add a *Latest* button, displaying the most recent observation of the
   selected data set, and a ``-f/--features`` option choosing the features to display
-* hfcviewer: new look inspired by the LIRA visual identity (anthracite header with a
-  violet accent, flat ttk widgets, Avenir/Noto fonts), with readable data set names,
-  a legend of the contour colors with the number of contours, units in the plot titles
-  (e.g. ``17.1 nm``, ``1.999 m (150 MHz)``), contours outlined to be visible on any
+* hfcviewer: new look inspired by the LIRA visual identity (anthracite header with
+  the LIRA logo and a violet accent, flat ttk widgets, Avenir/Noto fonts), with
+  readable data set names, a legend of the contour colors with the number of
+  contours, units in the plot titles (e.g. ``17.1 nm``, or the frequency for the
+  Nançay radioheliograph, e.g. ``150 MHz``), contours outlined to be visible on any
   image, and a status bar
 * hfcviewer: faster redraws, the quicklook image being processed once per observation
   and only the contours being redrawn when the features or their colors change

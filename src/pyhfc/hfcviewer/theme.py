@@ -8,10 +8,19 @@ surfaces and a geometric sans-serif typeface.
 
 from __future__ import annotations
 
+import logging
 import tkinter as tk
 import tkinter.font as tkfont
 from dataclasses import dataclass
+from importlib.resources import files
 from tkinter import ttk
+
+from PIL import Image, ImageTk
+
+logger = logging.getLogger(__name__)
+
+#: Logo of the LIRA, displayed in the header of the viewer
+LOGO = "lira_logo.png"
 
 # ________________ Colors (LIRA palette) _________
 
@@ -189,3 +198,17 @@ def apply_theme(root: tk.Misc) -> Fonts:
 
     style.configure("TSeparator", background=GREY_LINE)
     return fonts
+
+
+def load_logo(height: int, master: tk.Misc | None = None) -> ImageTk.PhotoImage | None:
+    """Return the logo of the LIRA resized to ``height`` pixels, or None if not available."""
+    try:
+        with (files("pyhfc.hfcviewer") / "assets" / LOGO).open("rb") as file:
+            image = Image.open(file).convert("RGB")
+            image.load()
+    except (OSError, ModuleNotFoundError) as err:
+        logger.warning("Can not load the logo: %s", err)
+        return None
+    width = round(image.width * height / image.height)
+    image = image.resize((width, height), Image.Resampling.LANCZOS)
+    return ImageTk.PhotoImage(image, master=master)
